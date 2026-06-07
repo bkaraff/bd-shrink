@@ -790,8 +790,7 @@ if [[ -n "$MAIN_CLIPS" ]]; then
         fi
 
         if [[ $audio_tracks -eq 0 ]]; then
-            warn "  No audio extracted from ${clip}.m2ts — skipping"
-            continue
+            warn "  No audio extracted from ${clip}.m2ts — encoding video-only"
         fi
 
         # Pass 1
@@ -813,6 +812,7 @@ if [[ -n "$MAIN_CLIPS" ]]; then
             -pass 2 -passlogfile "$pass_log" \
             -an "$out_video" 2>/dev/null || {
                 warn "Pass 2 failed for ${clip}.m2ts"
+                rm -f "${pass_log}" "${pass_log}.mbtree" "${pass_log}.cuted"
                 continue
             }
 
@@ -835,9 +835,12 @@ if $MOVIE_ONLY; then
 
     # Identify the main movie playlist
     main_pl=$(python3 -c "
-import json
+import json, sys
 clf = json.load(open('$CLASSIFY_FILE'))
-print(clf['main_movie'][0])")
+if not clf['main_movie']:
+    print('', file=sys.stderr)
+    sys.exit(1)
+print(clf['main_movie'][0])") || die "No main movie found — cannot proceed with --movie-only"
 
     main_clips=$(python3 -c "
 import json
@@ -1087,13 +1090,13 @@ for cid in $ALL_CLIP_IDS; do
     if echo "$ENCODED_CLIP_IDS" | grep -qw "$cid"; then
         if [[ ! -f "$DST/BDMV/STREAM/${cid}.m2ts" ]]; then
             warn "Falling back to original for ${cid}.m2ts"
-            cp "$SOURCE/STREAM/${cid}.m2ts" "$DST/BDMV/STREAM/${cid}.m2ts"
-            cp "$SOURCE/CLIPINF/${cid}.clpi" "$DST/BDMV/CLIPINF/${cid}.clpi"
+            cp "$SOURCE/STREAM/${cid}.m2ts" "$DST/BDMV/STREAM/${cid}.m2ts" 2>/dev/null || true
+            cp "$SOURCE/CLIPINF/${cid}.clpi" "$DST/BDMV/CLIPINF/${cid}.clpi" 2>/dev/null || warn "Missing CLIPINF for ${cid}.clpi in source"
         fi
         continue
     fi
-    cp "$SOURCE/STREAM/${cid}.m2ts" "$DST/BDMV/STREAM/${cid}.m2ts"
-    cp "$SOURCE/CLIPINF/${cid}.clpi" "$DST/BDMV/CLIPINF/${cid}.clpi"
+cp "$SOURCE/STREAM/${cid}.m2ts" "$DST/BDMV/STREAM/${cid}.m2ts" 2>/dev/null || true
+cp "$SOURCE/CLIPINF/${cid}.clpi" "$DST/BDMV/CLIPINF/${cid}.clpi" 2>/dev/null || warn "Missing CLIPINF for ${cid}.clpi"
 done
 
 # Copy all MPLS files
@@ -1120,11 +1123,20 @@ log "Phase 6: Validating output..."
 
 # Check total size
 OUTPUT_SIZE=$(du -sb "$DST" 2>/dev/null | cut -f1)
-OUTPUT_GB=$(python3 -c "print(round(${OUTPUT_SIZE:-0} / 1073741824, 2))")
-log "Output size: ${OUTPUT_GB} GB"
+if [[ -z "${OUTPUT_SIZE:-}" ]]; then
+    warn "Could not determine output size — is the output path valid?"
+else
+    OUTPUT_GB=$(python3 -c "print(round(${OUTPUT_SIZE} / 1073741824, 2))")
+    log "Output size: ${OUTPUT_GB} GB"
 
-if [[ ${OUTPUT_SIZE:-0} -gt $(( TARGET_GB * 1073741824 )) ]]; then
-    warn "Output ($OUTPUT_GB GB) exceeds target ($TARGET_GB GB)!"
+    # Compare sizes using Python (handles both int and float targets)
+    exceeds=$(python3 -c "
+target = $TARGET_GB * 1073741824
+actual = $OUTPUT_SIZE
+print('yes' if actual > target else 'no')")
+    if [[ "$exceeds" == "yes" ]]; then
+        warn "Output (${OUTPUT_GB} GB) exceeds target ($TARGET_GB GB)!"
+    fi
 fi
 
 if [[ ! -e "$DST" ]]; then
@@ -1170,7 +1182,7 @@ fi
 
 # ─── Done ─────────────────────────────────────────────────────────────────────
 log "Done! Output: $DST"
-log "Size: ${OUTPUT_GB} GB / ${TARGET_GB} GB target"
+log "Size: ${OUTPUT_GB:-?} GB / ${TARGET_GB} GB target"
 if $HAS_BDJ && ! $MOVIE_ONLY; then
     warn "BD-J disc — test in a software player (VLC/mpv) before burning."
 elif $MOVIE_ONLY; then
