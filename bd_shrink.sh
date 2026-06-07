@@ -14,6 +14,9 @@ OVERHEAD_MB=200
 DRY_RUN=false
 FORCE=false
 KEEP_ONE=false
+MOVIE_ONLY=false
+OUTPUT_ISO=false
+COMMENTARY_AUDIO_BITRATE="128k"
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
 die()  { echo "ERROR: $*" >&2; exit 1; }
@@ -40,6 +43,9 @@ Options:
   --extras-crf NUM       Extras CRF value (default: 22)
   --main-preset NAME     x264 preset for main movie (default: slow)
   --main-audio BITRATE   Main movie audio re-encode bitrate (default: 640k)
+  --commentary-ab BITRATE Commentary/secondary audio bitrate (default: 128k)
+  --movie-only           Movie-only backup (no menus, no extras, fresh BD author)
+  --iso                  Output ISO instead of BDMV folder (combine with --movie-only)
   -f, --force            Overwrite output directory if it exists
   -n, --dry-run          Show what would be done without encoding
   -w, --work DIR         Working directory (default: /tmp/bd-shrink-XXXXXX)
@@ -80,6 +86,9 @@ while [[ $# -gt 0 ]]; do
         --extras-crf)      EXTRAS_CRF="$2"; shift 2 ;;
         --main-preset)     MAIN_PRESET="$2"; shift 2 ;;
         --main-audio)      MAIN_AUDIO_BITRATE="$2"; shift 2 ;;
+        --commentary-ab)   COMMENTARY_AUDIO_BITRATE="$2"; shift 2 ;;
+        --movie-only)      MOVIE_ONLY=true; shift ;;
+        --iso)             OUTPUT_ISO=true; shift ;;
         -f|--force)        FORCE=true; shift ;;
         -n|--dry-run)      DRY_RUN=true; shift ;;
         -w|--work)         WORK_DIR="$2"; shift 2 ;;
@@ -164,12 +173,14 @@ def parse_mpls(path):
             moff += 14
 
     chapters = [m for m in marks if m['type'] == 1]
+    chapter_times = sorted([m['time'] for m in chapters])
 
     return {
         'playitems': items,
         'subpaths': num_subpaths,
         'duration': sum(i['duration'] for i in items),
         'chapters': len(chapters),
+        'chapter_times': [round(t, 2) for t in chapter_times],
     }
 
 playlist_dir = sys.argv[1]
@@ -207,6 +218,7 @@ log "Found $(echo "$all_clips" | wc -l) unique M2TS clips"
 
 # Convert bash booleans to Python-safe strings
 if $KEEP_ONE; then PY_KEEP_ONE="True"; else PY_KEEP_ONE="False"; fi
+if $MOVIE_ONLY; then PY_MOVIE_ONLY="True"; else PY_MOVIE_ONLY="False"; fi
 if $NO_EXTRAS; then PY_NO_EXTRAS="True"; else PY_NO_EXTRAS="False"; fi
 if $FORCE; then PY_FORCE="True"; else PY_FORCE="False"; fi
 
@@ -304,6 +316,7 @@ for pl_name, pl_data in playlists.items():
         'filename': pl_name,
         'duration': round(pl_data['duration'], 1),
         'chapters': pl_data['chapters'],
+        'chapter_times': pl_data.get('chapter_times', []),
         'subpaths': pl_data['subpaths'],
         'clips': [item['clip'] for item in pl_data['playitems']],
         'total_clip_dur': round(sum(item['duration'] for item in pl_data['playitems']), 1),
@@ -499,17 +512,22 @@ total_menu_size = menu_size + orphan_size
 main_duration = 0
 main_audio_size = 0
 main_original_size = 0
+main_audio_tracks = 0
 for c in main_clips:
     cs = clips.get(c, {})
     main_original_size += cs.get('size_bytes', 0)
     dur = cs.get('duration_sec', 0)
     if dur > main_duration:
         main_duration = dur
-    for a in cs.get('audio', []):
+    audios = cs.get('audio', [])
+    for i, a in enumerate(audios):
         codec = a.get('codec', '')
-        ch = a.get('channels', 2)
-        rate = int('$MAIN_AUDIO_BITRATE'.replace('k', '')) * 1000
-        # Estimate re-encoded audio size
+        # First track = main audio bitrate, rest = commentary bitrate
+        if i == 0:
+            rate = int('$MAIN_AUDIO_BITRATE'.replace('k', '')) * 1000
+        else:
+            main_audio_tracks += 1
+            rate = int('$COMMENTARY_AUDIO_BITRATE'.replace('k', '')) * 1000
         if codec in ('dts', 'truehd', 'dts_hd_ma', 'pcm_s16le', 'pcm_s24le', 'pcm_s32le', 'flac'):
             main_audio_size += (rate * dur) / 8  # bits to bytes
 
@@ -532,11 +550,13 @@ for c in extras_clips:
             resolution = f"{w}x{h}"
 
     audio_bitrate = int('$EXTRAS_AUDIO_BITRATE'.replace('k', '')) * 1000
+    num_audio = len(cs.get('audio', []))
+    total_audio_bitrate = audio_bitrate * max(1, num_audio)  # all audio tracks at same bitrate
 
     if is_hd and dur > 0:
         # Estimate: 720p CRF 22 ~ 2-4 Mbps video
         est_video_bitrate = 3_000_000  # 3 Mbps conservative estimate
-        est_size = dur * (est_video_bitrate + audio_bitrate) / 8
+        est_size = dur * (est_video_bitrate + total_audio_bitrate) / 8
         extras_reencoded_size += est_size
     else:
         # Already small or SD, keep original
@@ -551,7 +571,11 @@ for c in extras_clips:
     }
 
 # Available for main movie
-available_for_main = target_available - total_menu_size - extras_reencoded_size
+if $PY_MOVIE_ONLY:
+    # Movie-only: all space goes to main movie
+    available_for_main = target_available
+else:
+    available_for_main = target_available - total_menu_size - extras_reencoded_size
 
 # Calculate main movie bitrate
 total_main_dur = 0
@@ -578,6 +602,9 @@ budget = {
     'main_bitrate_mbps': round(main_bitrate / 1000000, 2),
     'main_duration_sec': total_main_dur,
     'main_duration_str': f"{int(total_main_dur//3600)}h{int((total_main_dur%3600)//60)}m",
+    'main_audio_tracks': main_audio_tracks + 1,
+    'commentary_tracks': main_audio_tracks,
+    'commentary_bitrate': int('$COMMENTARY_AUDIO_BITRATE'.replace('k', '')),
     'extras_details': extras_clip_details,
 }
 
@@ -642,7 +669,7 @@ for c in sorted(clips):
 ")
 
 # Encode extras (single-pass CRF, downscale to 720p)
-if [[ -n "$EXTRAS_CLIPS" ]] && ! $NO_EXTRAS; then
+if [[ -n "$EXTRAS_CLIPS" ]] && ! $NO_EXTRAS && ! $MOVIE_ONLY; then
     log "Encoding extras ($(echo "$EXTRAS_CLIPS" | wc -l) clips)..."
 
     IFS=$'\n'
@@ -650,16 +677,37 @@ if [[ -n "$EXTRAS_CLIPS" ]] && ! $NO_EXTRAS; then
         log "  Extra: ${clip}.m2ts"
         src="$SOURCE/STREAM/${clip}.m2ts"
         out_video="$ENCODE_DIR/${clip}_video.h264"
-        out_audio="$ENCODE_DIR/${clip}_audio.ac3"
 
-        # Demux audio to AC3
-        ffmpeg -y -v error -i "$src" \
-            -map 0:a:0 -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" \
-            "$out_audio" 2>/dev/null || {
-                warn "Failed to extract audio from ${clip}.m2ts — copying original"
-                cp "$src" "$ENCODE_DIR/${clip}.m2ts"
-                continue
-            }
+        # Get stream counts for this clip
+        num_audio=$(ffprobe -v error -show_entries stream=codec_type \
+            -of default=noprint_wrappers=1:nokey=1 "$src" 2>/dev/null | grep -c "^audio" || echo "0")
+        num_subs=$(ffprobe -v error -show_entries stream=codec_type \
+            -of default=noprint_wrappers=1:nokey=1 "$src" 2>/dev/null | grep -c "^subtitle" || echo "0")
+
+        # Extract ALL audio tracks
+        audio_tracks=0
+        for i in $(seq 0 $((num_audio - 1))); do
+            out_a="$ENCODE_DIR/${clip}_audio_${i}.ac3"
+            ab="$EXTRAS_AUDIO_BITRATE"
+            ffmpeg -y -v error -i "$src" \
+                -map "0:a:${i}" -c:a ac3 -b:a "$ab" \
+                "$out_a" 2>/dev/null && ((audio_tracks++)) || warn "  Failed to extract audio track $i"
+        done
+
+        # Extract ALL subtitle tracks (PGS passthrough)
+        sub_tracks=0
+        for i in $(seq 0 $((num_subs - 1))); do
+            out_s="$ENCODE_DIR/${clip}_sub_${i}.sup"
+            ffmpeg -y -v error -i "$src" \
+                -map "0:s:${i}" -c copy -f sup \
+                "$out_s" 2>/dev/null && ((sub_tracks++)) || warn "  Failed to extract subtitle track $i"
+        done
+
+        if [[ $audio_tracks -eq 0 ]]; then
+            warn "  No audio extracted from ${clip}.m2ts — copying original"
+            cp "$src" "$ENCODE_DIR/${clip}.m2ts"
+            continue
+        fi
 
         # Encode video to 720p
         video_filter=""
@@ -685,7 +733,7 @@ for s in cs.get('streams',[]):
                 continue
             }
 
-        log "    done (video: $(du -h "$out_video" | cut -f1), audio: $(du -h "$out_audio" | cut -f1))"
+        log "    done (${audio_tracks} audio, ${sub_tracks} subtitle, video: $(du -h "$out_video" | cut -f1))"
     done
     unset IFS
 else
@@ -701,16 +749,42 @@ if [[ -n "$MAIN_CLIPS" ]]; then
         log "  Main: ${clip}.m2ts"
         src="$SOURCE/STREAM/${clip}.m2ts"
         out_video="$ENCODE_DIR/${clip}_video.h264"
-        out_audio="$ENCODE_DIR/${clip}_audio.ac3"
         pass_log="$WORK_DIR/x264_${clip}.log"
 
-        # Demux audio — convert to AC3
-        ffmpeg -y -v error -i "$src" \
-            -map 0:a:0 -c:a ac3 -b:a "$MAIN_AUDIO_BITRATE" \
-            "$out_audio" 2>/dev/null || {
-                warn "Failed to extract audio from ${clip}.m2ts"
-                continue
-            }
+        # Get stream counts
+        # Get stream counts
+        num_audio=$(ffprobe -v error -show_entries stream=codec_type \
+            -of default=noprint_wrappers=1:nokey=1 "$src" 2>/dev/null | grep -c "^audio" || echo "0")
+        num_subs=$(ffprobe -v error -show_entries stream=codec_type \
+            -of default=noprint_wrappers=1:nokey=1 "$src" 2>/dev/null | grep -c "^subtitle" || echo "0")
+
+        # Extract audio tracks — track 0 at MAIN, rest at COMMENTARY bitrate
+        audio_tracks=0
+        for i in $(seq 0 $((num_audio - 1))); do
+            out_a="$ENCODE_DIR/${clip}_audio_${i}.ac3"
+            if [[ $i -eq 0 ]]; then
+                ab="$MAIN_AUDIO_BITRATE"
+            else
+                ab="$COMMENTARY_AUDIO_BITRATE"
+            fi
+            ffmpeg -y -v error -i "$src" \
+                -map "0:a:${i}" -c:a ac3 -b:a "$ab" \
+                "$out_a" 2>/dev/null && ((audio_tracks++)) || warn "  Failed to extract audio track $i"
+        done
+
+        # Extract subtitle tracks (PGS passthrough)
+        sub_tracks=0
+        for i in $(seq 0 $((num_subs - 1))); do
+            out_s="$ENCODE_DIR/${clip}_sub_${i}.sup"
+            ffmpeg -y -v error -i "$src" \
+                -map "0:s:${i}" -c copy -f sup \
+                "$out_s" 2>/dev/null && ((sub_tracks++)) || warn "  Failed to extract subtitle track $i"
+        done
+
+        if [[ $audio_tracks -eq 0 ]]; then
+            warn "  No audio extracted from ${clip}.m2ts — skipping"
+            continue
+        fi
 
         # Pass 1
         ffmpeg -y -v error -i "$src" \
@@ -734,7 +808,7 @@ if [[ -n "$MAIN_CLIPS" ]]; then
                 continue
             }
 
-        log "    done (video: $(du -h "$out_video" | cut -f1), audio: $(du -h "$out_audio" | cut -f1))"
+        log "    done (${audio_tracks} audio, ${sub_tracks} subtitle, video: $(du -h "$out_video" | cut -f1))"
         rm -f "${pass_log}" "${pass_log}.mbtree" "${pass_log}.cuted"
     done
 fi
@@ -744,6 +818,145 @@ fi
 log "Phase 5: Rebuilding BD structure..."
 
 DST="$OUTPUT"
+
+if $MOVIE_ONLY; then
+    # ────────────────────────────────────────────────────────────────────
+    # Movie-only mode: fresh BD authoring with tsMuxeR (no menus, no extras)
+    # ────────────────────────────────────────────────────────────────────
+    log "  Movie-only mode: authoring fresh BD..."
+
+    # Identify the main movie playlist
+    main_pl=$(python3 -c "
+import json
+clf = json.load(open('$CLASSIFY_FILE'))
+print(clf['main_movie'][0])")
+
+    main_clips=$(python3 -c "
+import json
+clf = json.load(open('$CLASSIFY_FILE'))
+for c in clf['details']['$main_pl']['clips']:
+    print(c)")
+
+    # Get chapter timestamps from the original playlist
+    main_chapters=$(python3 -c "
+import json
+inv = json.load(open('$INVENTORY_FILE'))
+pl = inv['playlists']['$main_pl']
+ct = pl.get('chapter_times', [])
+parts = ['00:00:00']
+for t in ct:
+    h = int(t // 3600)
+    m = int((t % 3600) // 60)
+    s = int(t % 60)
+    parts.append(f'{h:02d}:{m:02d}:{s:02d}')
+# Remove duplicates and keep unique sorted
+seen = set()
+unique = []
+for p in parts:
+    if p not in seen:
+        unique.append(p)
+        seen.add(p)
+print(';'.join(unique))")
+
+    # Read fps from the first clip's probe
+    first_clip=$(echo "$main_clips" | head -1)
+    fps=$(python3 -c "
+import json
+with open('$CLIPS_DIR/${first_clip}.json') as f:
+    d = json.load(f)
+for s in d.get('streams', []):
+    if s.get('codec_type') == 'video':
+        print(s.get('r_frame_rate', '24000/1001'))
+        break
+" 2>/dev/null || echo "24000/1001")
+
+    clip_count=$(echo "$main_clips" | wc -l)
+
+    META_DIR="$WORK_DIR/meta"
+    mkdir -p "$META_DIR"
+    META_FILE="$META_DIR/movie.meta"
+
+    # Write MUXOPT header with chapters
+    cat > "$META_FILE" << META
+MUXOPT --no-pcr-on-video-pid --new-audio-pes --vbr --blu-ray --custom-chapters=${main_chapters}
+META
+
+    # Count max audio/subtitle tracks across all clips
+    max_audio=0
+    max_subs=0
+    for clip in $main_clips; do
+        a=0; while [[ -f "$ENCODE_DIR/${clip}_audio_${a}.ac3" ]]; do ((a++)); done
+        ((a > max_audio)) && max_audio=$a
+        s=0; while [[ -f "$ENCODE_DIR/${clip}_sub_${s}.sup" ]]; do ((s++)); done
+        ((s > max_subs)) && max_subs=$s
+    done
+
+    # Write video tracks
+    first=true
+    for clip in $main_clips; do
+        vf="$ENCODE_DIR/${clip}_video.h264"
+        [[ -f "$vf" ]] || { warn "Missing video for clip ${clip}"; continue; }
+        if $first; then
+            echo "V_MPEG4/ISO/AVC, \"$vf\", fps=$fps, insertSEI, contSPS" >> "$META_FILE"
+        else
+            echo "+V_MPEG4/ISO/AVC, \"$vf\", fps=$fps, insertSEI, contSPS" >> "$META_FILE"
+        fi
+        first=false
+    done
+
+    # Write audio tracks (grouped by track index across clips)
+    for aidx in $(seq 0 $((max_audio - 1))); do
+        first=true
+        for clip in $main_clips; do
+            af="$ENCODE_DIR/${clip}_audio_${aidx}.ac3"
+            [[ -f "$af" ]] || continue
+            if $first; then
+                echo "A_AC3, \"$af\"" >> "$META_FILE"
+            else
+                echo "+A_AC3, \"$af\"" >> "$META_FILE"
+            fi
+            first=false
+        done
+    done
+
+    # Write subtitle tracks (grouped by track index across clips)
+    for sidx in $(seq 0 $((max_subs - 1))); do
+        first=true
+        for clip in $main_clips; do
+            sf="$ENCODE_DIR/${clip}_sub_${sidx}.sup"
+            [[ -f "$sf" ]] || continue
+            if $first; then
+                echo "S_HDMV/PGS, \"$sf\"" >> "$META_FILE"
+            else
+                echo "+S_HDMV/PGS, \"$sf\"" >> "$META_FILE"
+            fi
+            first=false
+        done
+    done
+
+    log "  Running tsMuxeR ($(echo "$main_clips" | wc -l) clip(s), ${max_audio} audio, ${max_subs} subtitle)..."
+
+    if $OUTPUT_ISO; then
+        ISO_OUTPUT="${OUTPUT%.iso}.iso"
+        DST="$ISO_OUTPUT"
+        tsMuxeR "$META_FILE" "$ISO_OUTPUT" > /dev/null 2>&1 || {
+            die "tsMuxeR authoring failed"
+        }
+        log "  ISO created: $ISO_OUTPUT"
+    else
+        rm -rf "$DST" 2>/dev/null || true
+        tsMuxeR "$META_FILE" "$DST" > /dev/null 2>&1 || {
+            die "tsMuxeR authoring failed"
+        }
+        log "  BDMV folder created: $DST"
+    fi
+
+    log "  Fresh BD structure complete"
+else
+    # ────────────────────────────────────────────────────────────────────
+    # Surgical replacement mode: preserve original menus, files, structure
+    # ────────────────────────────────────────────────────────────────────
+
 rm -rf "$DST" 2>/dev/null || true
 mkdir -p "$DST/BDMV/PLAYLIST" "$DST/BDMV/CLIPINF" "$DST/BDMV/STREAM"
 mkdir -p "$DST/BDMV/BACKUP/PLAYLIST" "$DST/BDMV/BACKUP/CLIPINF"
@@ -768,11 +981,10 @@ mkdir -p "$REBUILD_DIR"
 remux_clip() {
     local clip_id="$1"
     local video_file="$ENCODE_DIR/${clip_id}_video.h264"
-    local audio_file="$ENCODE_DIR/${clip_id}_audio.ac3"
     local temp_meta="$REBUILD_DIR/${clip_id}.meta"
     local temp_output="$REBUILD_DIR/${clip_id}_output"
 
-    if [[ ! -f "$video_file" ]] || [[ ! -f "$audio_file" ]]; then
+    if [[ ! -f "$video_file" ]]; then
         return 1
     fi
 
@@ -791,11 +1003,23 @@ for s in d.get('streams', []):
 " 2>/dev/null || echo "24000/1001")
     fi
 
+    # Build META with video + all audio + all subtitle tracks
     cat > "$temp_meta" << METAEOF
 MUXOPT --no-pcr-on-video-pid --new-audio-pes --vbr --blu-ray
 V_MPEG4/ISO/AVC, "$video_file", fps=$fps, insertSEI, contSPS
-A_AC3, "$audio_file"
 METAEOF
+
+    local a=0
+    while [[ -f "$ENCODE_DIR/${clip_id}_audio_${a}.ac3" ]]; do
+        echo "A_AC3, \"$ENCODE_DIR/${clip_id}_audio_${a}.ac3\"" >> "$temp_meta"
+        ((a++))
+    done
+
+    local s=0
+    while [[ -f "$ENCODE_DIR/${clip_id}_sub_${s}.sup" ]]; do
+        echo "S_HDMV/PGS, \"$ENCODE_DIR/${clip_id}_sub_${s}.sup\"" >> "$temp_meta"
+        ((s++))
+    done
 
     mkdir -p "$temp_output"
     tsMuxeR "$temp_meta" "$temp_output" > /dev/null 2>&1 || {
@@ -810,6 +1034,7 @@ METAEOF
     if [[ -f "$new_m2ts" ]] && [[ -f "$new_clpi" ]]; then
         cp "$new_m2ts" "$DST/BDMV/STREAM/${clip_id}.m2ts"
         cp "$new_clpi" "$DST/BDMV/CLIPINF/${clip_id}.clpi"
+        log "    remuxed: ${clip_id}.m2ts (${a} audio, ${s} subtitle)"
         return 0
     fi
     return 1
@@ -848,13 +1073,10 @@ done
 
 # Copy un-encoded clips verbatim
 for cid in $ALL_CLIP_IDS; do
-    # Skip if already processed
     if [[ -f "$DST/BDMV/STREAM/${cid}.m2ts" ]]; then
         continue
     fi
-    # Skip if was encoded but remux failed
     if echo "$ENCODED_CLIP_IDS" | grep -qw "$cid"; then
-        # Remux failed for this one — copy original as fallback
         if [[ ! -f "$DST/BDMV/STREAM/${cid}.m2ts" ]]; then
             warn "Falling back to original for ${cid}.m2ts"
             cp "$SOURCE/STREAM/${cid}.m2ts" "$DST/BDMV/STREAM/${cid}.m2ts"
@@ -862,7 +1084,6 @@ for cid in $ALL_CLIP_IDS; do
         fi
         continue
     fi
-    # Copy verbatim
     cp "$SOURCE/STREAM/${cid}.m2ts" "$DST/BDMV/STREAM/${cid}.m2ts"
     cp "$SOURCE/CLIPINF/${cid}.clpi" "$DST/BDMV/CLIPINF/${cid}.clpi"
 done
@@ -883,6 +1104,8 @@ cp "$SOURCE/MovieObject.bdmv" "$DST/BDMV/BACKUP/"
 cp "$SOURCE/BACKUP/PLAYLIST/"*.mpls "$DST/BDMV/BACKUP/PLAYLIST/" 2>/dev/null || true
 cp "$DST/BDMV/CLIPINF/"*.clpi "$DST/BDMV/BACKUP/CLIPINF/" 2>/dev/null || true
 
+fi  # end if MOVIE_ONLY
+
 # ─── Phase 6: Validate ───────────────────────────────────────────────────────
 
 log "Phase 6: Validating output..."
@@ -896,10 +1119,19 @@ if [[ ${OUTPUT_SIZE:-0} -gt $(( TARGET_GB * 1073741824 )) ]]; then
     warn "Output ($OUTPUT_GB GB) exceeds target ($TARGET_GB GB)!"
 fi
 
-# Verify all MPLS clips exist
-MISSING_CLIPS=0
-for mpls in "$DST/BDMV/PLAYLIST/"*.mpls; do
-    python3 -c "
+if [[ ! -e "$DST" ]]; then
+    die "Output does not exist: $DST"
+fi
+
+# For folder-based output (not ISO), verify BD structure
+if [[ -d "$DST" ]] && [[ -d "$DST/BDMV" ]]; then
+    log "Verifying BDMV structure..."
+
+    # Verify all MPLS clips exist (surgical mode only — checks original playlists)
+    if ! $MOVIE_ONLY; then
+        MISSING_CLIPS=0
+        for mpls in "$DST/BDMV/PLAYLIST/"*.mpls; do
+            python3 -c "
 import json, sys, os
 result = json.load(open('$WORK_DIR/playlists.json'))
 pl_name = os.path.basename('$mpls')
@@ -910,30 +1142,34 @@ if pl_name in result:
             print(f'MISSING: {item[\"clip\"]}.m2ts referenced by {pl_name}')
             sys.exit(1)
 " 2>/dev/null || MISSING_CLIPS=1
-done
+        done
 
-if [[ $MISSING_CLIPS -eq 1 ]]; then
-    warn "Some MPLS references point to missing M2TS files!"
-else
-    log "All playlist references verified."
-fi
-
-# Verify CLPI files exist for all M2TS
-for m2ts in "$DST/BDMV/STREAM/"*.m2ts; do
-    cid=$(basename "$m2ts" .m2ts)
-    if [[ ! -f "$DST/BDMV/CLIPINF/${cid}.clpi" ]]; then
-        warn "Missing CLPI for ${cid}.m2ts"
+        if [[ $MISSING_CLIPS -eq 1 ]]; then
+            warn "Some MPLS references point to missing M2TS files!"
+        else
+            log "All playlist references verified."
+        fi
     fi
-done
+
+    # Verify CLPI files exist for all M2TS
+    for m2ts in "$DST/BDMV/STREAM/"*.m2ts; do
+        cid=$(basename "$m2ts" .m2ts)
+        if [[ ! -f "$DST/BDMV/CLIPINF/${cid}.clpi" ]]; then
+            warn "Missing CLPI for ${cid}.m2ts"
+        fi
+    done
+fi
 
 # ─── Done ─────────────────────────────────────────────────────────────────────
 log "Done! Output: $DST"
 log "Size: ${OUTPUT_GB} GB / ${TARGET_GB} GB target"
-if $HAS_BDJ; then
+if $HAS_BDJ && ! $MOVIE_ONLY; then
     warn "BD-J disc — test in a software player (VLC/mpv) before burning."
+elif $MOVIE_ONLY; then
+    info "Movie-only — no BD-J concerns."
 fi
 log "Working files retained at: $WORK_DIR (delete manually when satisfied)"
 log "IMPORTANT: Test the output in VLC or mpv before burning to disc!"
 
-# Cleanup
-rm -rf "$REBUILD_DIR" 2>/dev/null || true
+# Cleanup temp directories
+rm -rf "${REBUILD_DIR:-}" 2>/dev/null || true
