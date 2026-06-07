@@ -686,22 +686,26 @@ if [[ -n "$EXTRAS_CLIPS" ]] && ! $NO_EXTRAS && ! $MOVIE_ONLY; then
 
         # Extract ALL audio tracks
         audio_tracks=0
-        for i in $(seq 0 $((num_audio - 1))); do
-            out_a="$ENCODE_DIR/${clip}_audio_${i}.ac3"
-            ab="$EXTRAS_AUDIO_BITRATE"
-            ffmpeg -y -v error -i "$src" \
-                -map "0:a:${i}" -c:a ac3 -b:a "$ab" \
-                "$out_a" 2>/dev/null && ((audio_tracks++)) || warn "  Failed to extract audio track $i"
-        done
+        if [[ "$num_audio" -gt 0 ]]; then
+            for i in $(seq 0 $((num_audio - 1))); do
+                out_a="$ENCODE_DIR/${clip}_audio_${i}.ac3"
+                ab="$EXTRAS_AUDIO_BITRATE"
+                ffmpeg -y -v error -i "$src" \
+                    -map "0:a:${i}" -c:a ac3 -b:a "$ab" \
+                    "$out_a" 2>/dev/null && ((audio_tracks++)) || warn "  Failed to extract audio track $i"
+            done
+        fi
 
         # Extract ALL subtitle tracks (PGS passthrough)
         sub_tracks=0
-        for i in $(seq 0 $((num_subs - 1))); do
-            out_s="$ENCODE_DIR/${clip}_sub_${i}.sup"
-            ffmpeg -y -v error -i "$src" \
-                -map "0:s:${i}" -c copy -f sup \
-                "$out_s" 2>/dev/null && ((sub_tracks++)) || warn "  Failed to extract subtitle track $i"
-        done
+        if [[ "$num_subs" -gt 0 ]]; then
+            for i in $(seq 0 $((num_subs - 1))); do
+                out_s="$ENCODE_DIR/${clip}_sub_${i}.sup"
+                ffmpeg -y -v error -i "$src" \
+                    -map "0:s:${i}" -c copy -f sup \
+                    "$out_s" 2>/dev/null && ((sub_tracks++)) || warn "  Failed to extract subtitle track $i"
+            done
+        fi
 
         if [[ $audio_tracks -eq 0 ]]; then
             warn "  No audio extracted from ${clip}.m2ts — copying original"
@@ -760,26 +764,30 @@ if [[ -n "$MAIN_CLIPS" ]]; then
 
         # Extract audio tracks — track 0 at MAIN, rest at COMMENTARY bitrate
         audio_tracks=0
-        for i in $(seq 0 $((num_audio - 1))); do
-            out_a="$ENCODE_DIR/${clip}_audio_${i}.ac3"
-            if [[ $i -eq 0 ]]; then
-                ab="$MAIN_AUDIO_BITRATE"
-            else
-                ab="$COMMENTARY_AUDIO_BITRATE"
-            fi
-            ffmpeg -y -v error -i "$src" \
-                -map "0:a:${i}" -c:a ac3 -b:a "$ab" \
-                "$out_a" 2>/dev/null && ((audio_tracks++)) || warn "  Failed to extract audio track $i"
-        done
+        if [[ "$num_audio" -gt 0 ]]; then
+            for i in $(seq 0 $((num_audio - 1))); do
+                out_a="$ENCODE_DIR/${clip}_audio_${i}.ac3"
+                if [[ $i -eq 0 ]]; then
+                    ab="$MAIN_AUDIO_BITRATE"
+                else
+                    ab="$COMMENTARY_AUDIO_BITRATE"
+                fi
+                ffmpeg -y -v error -i "$src" \
+                    -map "0:a:${i}" -c:a ac3 -b:a "$ab" \
+                    "$out_a" 2>/dev/null && ((audio_tracks++)) || warn "  Failed to extract audio track $i"
+            done
+        fi
 
         # Extract subtitle tracks (PGS passthrough)
         sub_tracks=0
-        for i in $(seq 0 $((num_subs - 1))); do
-            out_s="$ENCODE_DIR/${clip}_sub_${i}.sup"
-            ffmpeg -y -v error -i "$src" \
-                -map "0:s:${i}" -c copy -f sup \
-                "$out_s" 2>/dev/null && ((sub_tracks++)) || warn "  Failed to extract subtitle track $i"
-        done
+        if [[ "$num_subs" -gt 0 ]]; then
+            for i in $(seq 0 $((num_subs - 1))); do
+                out_s="$ENCODE_DIR/${clip}_sub_${i}.sup"
+                ffmpeg -y -v error -i "$src" \
+                    -map "0:s:${i}" -c copy -f sup \
+                    "$out_s" 2>/dev/null && ((sub_tracks++)) || warn "  Failed to extract subtitle track $i"
+            done
+        fi
 
         if [[ $audio_tracks -eq 0 ]]; then
             warn "  No audio extracted from ${clip}.m2ts — skipping"
