@@ -97,6 +97,11 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# --movie-only implies --keep-one (only the first main playlist is encoded)
+if $MOVIE_ONLY; then
+    KEEP_ONE=true
+fi
+
 [[ -z "$SOURCE" ]] && die "Source folder required (-s)"
 [[ -z "$OUTPUT" ]] && die "Output folder required (-o)"
 [[ ! -f "$SOURCE/index.bdmv" ]] && die "Source must contain index.bdmv (point to the BDMV folder)"
@@ -581,6 +586,8 @@ else:
 total_main_dur = 0
 for pl_name in main_pls:
     total_main_dur += clf['details'][pl_name]['duration']
+    if $PY_MOVIE_ONLY:
+        break  # movie-only only encodes the first playlist
 
 main_bitrate = 0
 if total_main_dur > 0:
