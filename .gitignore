@@ -1,0 +1,14 @@
+# Encode artifacts
+*.h264
+*.ac3
+*.meta
+x264_*.log
+
+# Test output
+/test-output/
+/work/
+
+# OS files
+.DS_Store
+Thumbs.db
+
