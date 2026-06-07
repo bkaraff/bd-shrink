@@ -691,7 +691,7 @@ if [[ -n "$EXTRAS_CLIPS" ]] && ! $NO_EXTRAS && ! $MOVIE_ONLY; then
             out_a="$ENCODE_DIR/${clip}_audio_${i}.ac3"
             ffmpeg -y -v error -i "$src" \
                 -map "0:a:${i}?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" \
-                "$out_a" 2>/dev/null
+                "$out_a" 2>/dev/null || true
             if [[ -f "$out_a" ]]; then
                 ((audio_tracks++))
             else
@@ -705,7 +705,7 @@ if [[ -n "$EXTRAS_CLIPS" ]] && ! $NO_EXTRAS && ! $MOVIE_ONLY; then
             out_s="$ENCODE_DIR/${clip}_sub_${i}.sup"
             ffmpeg -y -v error -i "$src" \
                 -map "0:s:${i}?" -c copy -f sup \
-                "$out_s" 2>/dev/null
+                "$out_s" 2>/dev/null || true
             if [[ -f "$out_s" ]]; then
                 ((sub_tracks++))
             else
@@ -772,7 +772,7 @@ if [[ -n "$MAIN_CLIPS" ]]; then
             fi
             ffmpeg -y -v error -i "$src" \
                 -map "0:a:${i}?" -c:a ac3 -b:a "$ab" \
-                "$out_a" 2>/dev/null
+                "$out_a" 2>/dev/null || true
             if [[ -f "$out_a" ]]; then
                 ((audio_tracks++))
             fi
@@ -784,7 +784,7 @@ if [[ -n "$MAIN_CLIPS" ]]; then
             out_s="$ENCODE_DIR/${clip}_sub_${i}.sup"
             ffmpeg -y -v error -i "$src" \
                 -map "0:s:${i}?" -c copy -f sup \
-                "$out_s" 2>/dev/null
+                "$out_s" 2>/dev/null || true
             if [[ -f "$out_s" ]]; then
                 ((sub_tracks++))
             else
