@@ -680,7 +680,6 @@ if [[ -n "$EXTRAS_CLIPS" ]] && ! $NO_EXTRAS && ! $MOVIE_ONLY; then
         # Extract ALL audio tracks (single ffmpeg call, all tracks)
         audio_tracks=0
         if [[ "$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$src" 2>/dev/null | wc -l)" -gt 0 ]]; then
-            set +e
             ffmpeg -y -v error -i "$src" \
                 -map "0:a:0?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_0.ac3" \
                 -map "0:a:1?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_1.ac3" \
@@ -689,9 +688,10 @@ if [[ -n "$EXTRAS_CLIPS" ]] && ! $NO_EXTRAS && ! $MOVIE_ONLY; then
                 -map "0:a:4?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_4.ac3" \
                 -map "0:a:5?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_5.ac3" \
                 -map "0:a:6?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_6.ac3" \
-                -map "0:a:7?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_7.ac3"
+                -map "0:a:7?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_7.ac3" &
+            ff_pid=$!
+            wait $ff_pid
             ff_rc=$?
-            set -e
             [[ $ff_rc -ne 0 ]] && echo "WARN: ffmpeg audio exit $ff_rc for $clip" >&2
         fi
 
@@ -705,7 +705,6 @@ if [[ -n "$EXTRAS_CLIPS" ]] && ! $NO_EXTRAS && ! $MOVIE_ONLY; then
         # Extract ALL subtitle tracks (single ffmpeg call)
         sub_tracks=0
         if [[ "$(ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$src" 2>/dev/null | wc -l)" -gt 0 ]]; then
-            set +e
             ffmpeg -y -v error -i "$src" \
                 -map "0:s:0?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_0.sup" \
                 -map "0:s:1?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_1.sup" \
@@ -714,9 +713,10 @@ if [[ -n "$EXTRAS_CLIPS" ]] && ! $NO_EXTRAS && ! $MOVIE_ONLY; then
                 -map "0:s:4?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_4.sup" \
                 -map "0:s:5?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_5.sup" \
                 -map "0:s:6?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_6.sup" \
-                -map "0:s:7?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_7.sup"
+                -map "0:s:7?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_7.sup" &
+            ff_pid=$!
+            wait $ff_pid
             ff_rc=$?
-            set -e
             [[ $ff_rc -ne 0 ]] && echo "WARN: ffmpeg sub exit $ff_rc for $clip" >&2
         fi
         for i in $(seq 0 7); do
@@ -751,7 +751,10 @@ for s in cs.get('streams',[]):
             -map 0:v:0 -c:v libx264 -preset medium -crf "$EXTRAS_CRF" \
             $video_filter \
             -x264opts "$BD_X264_OPTS:vbv-maxrate=12000:vbv-bufsize=12000" \
-            "$out_video" 2>/dev/null; ff_rc=$?
+            "$out_video" 2>/dev/null &
+        ff_pid=$!
+        wait $ff_pid
+        ff_rc=$?
         if [[ $ff_rc -ne 0 ]]; then
             warn "Failed to encode video for ${clip}.m2ts"
             continue
@@ -778,7 +781,6 @@ if [[ -n "$MAIN_CLIPS" ]]; then
         # Extract all audio tracks (single ffmpeg call)
         audio_tracks=0
         if [[ "$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$src" 2>/dev/null | wc -l)" -gt 0 ]]; then
-            set +e
             ffmpeg -y -v error -i "$src" \
                 -map "0:a:0?" -c:a ac3 -b:a "$MAIN_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_0.ac3" \
                 -map "0:a:1?" -c:a ac3 -b:a "$COMMENTARY_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_1.ac3" \
@@ -787,9 +789,10 @@ if [[ -n "$MAIN_CLIPS" ]]; then
                 -map "0:a:4?" -c:a ac3 -b:a "$COMMENTARY_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_4.ac3" \
                 -map "0:a:5?" -c:a ac3 -b:a "$COMMENTARY_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_5.ac3" \
                 -map "0:a:6?" -c:a ac3 -b:a "$COMMENTARY_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_6.ac3" \
-                -map "0:a:7?" -c:a ac3 -b:a "$COMMENTARY_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_7.ac3"
+                -map "0:a:7?" -c:a ac3 -b:a "$COMMENTARY_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_7.ac3" &
+            ff_pid=$!
+            wait $ff_pid
             ff_rc=$?
-            set -e
             [[ $ff_rc -ne 0 ]] && echo "WARN: ffmpeg audio exit $ff_rc for $clip" >&2
         fi
         for i in $(seq 0 7); do
@@ -802,7 +805,6 @@ if [[ -n "$MAIN_CLIPS" ]]; then
         # Extract all subtitle tracks (single ffmpeg call)
         sub_tracks=0
         if [[ "$(ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$src" 2>/dev/null | wc -l)" -gt 0 ]]; then
-            set +e
             ffmpeg -y -v error -i "$src" \
                 -map "0:s:0?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_0.sup" \
                 -map "0:s:1?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_1.sup" \
@@ -811,9 +813,10 @@ if [[ -n "$MAIN_CLIPS" ]]; then
                 -map "0:s:4?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_4.sup" \
                 -map "0:s:5?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_5.sup" \
                 -map "0:s:6?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_6.sup" \
-                -map "0:s:7?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_7.sup"
+                -map "0:s:7?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_7.sup" &
+            ff_pid=$!
+            wait $ff_pid
             ff_rc=$?
-            set -e
             [[ $ff_rc -ne 0 ]] && echo "WARN: ffmpeg sub exit $ff_rc for $clip" >&2
         fi
         for i in $(seq 0 7); do
@@ -833,7 +836,10 @@ if [[ -n "$MAIN_CLIPS" ]]; then
             -b:v "$MAIN_BITRATE" \
             -x264opts "$BD_X264_OPTS" \
             -pass 1 -passlogfile "$pass_log" \
-            -an -f null /dev/null; ff_rc=$?
+            -an -f null /dev/null &
+        ff_pid=$!
+        wait $ff_pid
+        ff_rc=$?
         if [[ $ff_rc -ne 0 ]]; then
             warn "Pass 1 failed for ${clip}.m2ts"
             continue
@@ -845,7 +851,10 @@ if [[ -n "$MAIN_CLIPS" ]]; then
             -b:v "$MAIN_BITRATE" -maxrate "$MAIN_MAXRATE" -bufsize "$MAIN_BUFSIZE" \
             -x264opts "$BD_X264_OPTS" \
             -pass 2 -passlogfile "$pass_log" \
-            -an "$out_video"; ff_rc=$?
+            -an "$out_video" &
+        ff_pid=$!
+        wait $ff_pid
+        ff_rc=$?
         if [[ $ff_rc -ne 0 ]]; then
             warn "Pass 2 failed for ${clip}.m2ts"
             rm -f "${pass_log}" "${pass_log}.mbtree" "${pass_log}.cuted"
