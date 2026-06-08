@@ -87,7 +87,7 @@ Reference disc for testing: `/mnt/downloads/Dolemite.1975.1080p.USA.Blu-Ray.AVC.
 ## Known issues
 
 - **Output size over target**: Movie-only mode doesn't subtract audio/tsMuxeR overhead from video bitrate budget. A 23 GB target produces ~25 GB output with 8 audio tracks. Need to add audio size estimation to Phase 3 budget calculation.
-- **`((0++))` kills `set -e`**: `((counter++))` evaluates to 0 when counter starts at 0, which returns exit code 1 and kills the script. Always use `((++counter))` (pre-increment) instead. Affects audio_tracks/sub_tracks counting in Phase 4 and `a/s` loop counting in Phase 5.
+- **`"${ff_cmd[@]}" || true` can crash bash**: On some systems (Fedora 44, kernel 7.0.11, bash 5.3.9), using `"${array[@]}" || true` after ffmpeg causes a non-deterministic crash — bash dies after ffmpeg exits but before evaluating the compound list. No ERR trap fires (not a `set -e` failure). The workaround is to avoid the compound list entirely: run each ffmpeg as a background subshell with per-process error suppression: `( ffmpeg ... || true ) &` + `wait`. This bypasses the compound list evaluation that triggers the bug. Affects audio and subtitle extraction loops using `"${ff_cmd[@]}" || true` with optional `-map "0:a:N?"` streams.
 
 ## Gotchas
 
