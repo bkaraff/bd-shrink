@@ -677,15 +677,14 @@ if [[ -n "$EXTRAS_CLIPS" ]] && ! $NO_EXTRAS && ! $MOVIE_ONLY; then
         src="$SOURCE/STREAM/${clip}.m2ts"
         out_video="$ENCODE_DIR/${clip}_video.h264"
 
-        # Extract ALL audio tracks (one ffmpeg per track, run in parallel)
+        # Extract ALL audio tracks (sequentially, one per track)
         audio_tracks=0
         if [[ "$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$src" 2>/dev/null | wc -l)" -gt 0 ]]; then
             for i in $(seq 0 7); do
                 ( ffmpeg -y -v error -i "$src" \
                     -map "0:a:${i}?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" \
-                    "$ENCODE_DIR/${clip}_audio_${i}.ac3" || true ) &
+                    "$ENCODE_DIR/${clip}_audio_${i}.ac3" || true )
             done
-            wait
         fi
 
         for i in $(seq 0 7); do
@@ -695,15 +694,14 @@ if [[ -n "$EXTRAS_CLIPS" ]] && ! $NO_EXTRAS && ! $MOVIE_ONLY; then
             fi
         done
 
-        # Extract ALL subtitle tracks in a single pass
+        # Extract ALL subtitle tracks (sequentially, one per track)
         sub_tracks=0
         if [[ "$(ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$src" 2>/dev/null | wc -l)" -gt 0 ]]; then
             for i in $(seq 0 7); do
                 ( ffmpeg -y -v error -i "$src" \
                     -map "0:s:${i}?" -c copy -f sup \
-                    "$ENCODE_DIR/${clip}_sub_${i}.sup" || true ) &
+                    "$ENCODE_DIR/${clip}_sub_${i}.sup" || true )
             done
-            wait
         fi
         for i in $(seq 0 7); do
             out_s="$ENCODE_DIR/${clip}_sub_${i}.sup"
@@ -763,16 +761,13 @@ if [[ -n "$MAIN_CLIPS" ]]; then
         # Extract all audio tracks in a single ffmpeg pass (reads M2TS once)
         audio_tracks=0
         if [[ "$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$src" 2>/dev/null | wc -l)" -gt 0 ]]; then
-            ff_cmd=(ffmpeg -y -v error -i "$src")
             for i in $(seq 0 7); do
-                if [[ $i -eq 0 ]]; then
-                    ab="$MAIN_AUDIO_BITRATE"
-                else
-                    ab="$COMMENTARY_AUDIO_BITRATE"
-                fi
-                ff_cmd+=(-map "0:a:${i}?" -c:a ac3 -b:a "$ab" "$ENCODE_DIR/${clip}_audio_${i}.ac3")
+                ab="$COMMENTARY_AUDIO_BITRATE"
+                [[ $i -eq 0 ]] && ab="$MAIN_AUDIO_BITRATE"
+                ( ffmpeg -y -v error -i "$src" \
+                    -map "0:a:${i}?" -c:a ac3 -b:a "$ab" \
+                    "$ENCODE_DIR/${clip}_audio_${i}.ac3" || true )
             done
-            "${ff_cmd[@]}" || true
         fi
         for i in $(seq 0 7); do
             out_a="$ENCODE_DIR/${clip}_audio_${i}.ac3"
@@ -781,15 +776,14 @@ if [[ -n "$MAIN_CLIPS" ]]; then
             fi
         done
 
-        # Extract all subtitle tracks in a single pass
+        # Extract all subtitle tracks (sequentially)
         sub_tracks=0
         if [[ "$(ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$src" 2>/dev/null | wc -l)" -gt 0 ]]; then
             for i in $(seq 0 7); do
                 ( ffmpeg -y -v error -i "$src" \
                     -map "0:s:${i}?" -c copy -f sup \
-                    "$ENCODE_DIR/${clip}_sub_${i}.sup" || true ) &
+                    "$ENCODE_DIR/${clip}_sub_${i}.sup" || true )
             done
-            wait
         fi
         for i in $(seq 0 7); do
             out_s="$ENCODE_DIR/${clip}_sub_${i}.sup"
