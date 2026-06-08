@@ -25,13 +25,9 @@ log()  { echo "[$(date +%H:%M:%S)] $*"; }
 info() { echo "       $*"; }
 trap 'echo "FATAL: line $LINENO exit $?" >&2' ERR
 
-# Run ffmpeg with set +e to guard against non-zero exit under set -e
+# Run ffmpeg via Python subprocess to avoid bash child-reaping crash (Fedora 44)
 run_ff() {
-    set +e
-    "$@"
-    local rc=$?
-    set -e
-    return $rc
+    python3 -c "import subprocess, sys; r = subprocess.run(sys.argv[1:]); sys.exit(r.returncode)" "$@"
 }
 
 usage() {
