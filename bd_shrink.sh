@@ -741,7 +741,7 @@ if [[ -n "$EXTRAS_CLIPS" ]] && ! $NO_EXTRAS && ! $MOVIE_ONLY; then
         fi
 
         # Encode video to 720p
-        video_filter=""
+        video_filter=()
         src_height=$(python3 -c "
 import json
 cs = json.load(open('$CLIPS_DIR/${clip}.json'))
@@ -752,15 +752,15 @@ for s in cs.get('streams',[]):
 " 2>/dev/null || echo "1080")
 
         if [[ "$src_height" -gt 720 ]]; then
-            video_filter="-vf scale=$EXTRAS_SCALE"
+            video_filter=(-vf "scale=$EXTRAS_SCALE")
         fi
 
         if run_ff ffmpeg -y -v error -i "$src" \
             -map 0:v:0 -c:v libx264 -preset medium -crf "$EXTRAS_CRF" \
-            $video_filter \
+            "${video_filter[@]}" \
             -x264opts "$BD_X264_OPTS:vbv-maxrate=12000:vbv-bufsize=12000" \
             "$out_video"; then
-            log "    done (${audio_tracks} audio, ${sub_tracks} subtitle, video: $(du -h "$out_video" 2>/dev/null | cut -f1 || echo 'unknown'))"
+            log "    done (${audio_tracks} audio, ${sub_tracks} subtitle)"
         else
             warn "Failed to encode video for ${clip}.m2ts"
         fi
@@ -855,7 +855,7 @@ if [[ -n "$MAIN_CLIPS" ]]; then
             -x264opts "$BD_X264_OPTS" \
             -pass 2 -passlogfile "$pass_log" \
             -an "$out_video"; then
-            log "    done (${audio_tracks} audio, ${sub_tracks} subtitle, video: $(du -h "$out_video" 2>/dev/null | cut -f1 || echo 'unknown'))"
+            log "    done (${audio_tracks} audio, ${sub_tracks} subtitle)"
             rm -f "${pass_log}" "${pass_log}.mbtree" "${pass_log}.cuted"
         else
             warn "Pass 2 failed for ${clip}.m2ts"
