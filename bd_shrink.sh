@@ -681,9 +681,9 @@ if [[ -n "$EXTRAS_CLIPS" ]] && ! $NO_EXTRAS && ! $MOVIE_ONLY; then
         audio_tracks=0
         if [[ "$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$src" 2>/dev/null | wc -l)" -gt 0 ]]; then
             for i in $(seq 0 7); do
-                ffmpeg -y -v error -i "$src" \
+                ( ffmpeg -y -v error -i "$src" \
                     -map "0:a:${i}?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" \
-                    "$ENCODE_DIR/${clip}_audio_${i}.ac3" &
+                    "$ENCODE_DIR/${clip}_audio_${i}.ac3" || true ) &
             done
             wait
         fi
@@ -699,9 +699,9 @@ if [[ -n "$EXTRAS_CLIPS" ]] && ! $NO_EXTRAS && ! $MOVIE_ONLY; then
         sub_tracks=0
         if [[ "$(ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$src" 2>/dev/null | wc -l)" -gt 0 ]]; then
             for i in $(seq 0 7); do
-                ffmpeg -y -v error -i "$src" \
+                ( ffmpeg -y -v error -i "$src" \
                     -map "0:s:${i}?" -c copy -f sup \
-                    "$ENCODE_DIR/${clip}_sub_${i}.sup" &
+                    "$ENCODE_DIR/${clip}_sub_${i}.sup" || true ) &
             done
             wait
         fi
@@ -785,9 +785,9 @@ if [[ -n "$MAIN_CLIPS" ]]; then
         sub_tracks=0
         if [[ "$(ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$src" 2>/dev/null | wc -l)" -gt 0 ]]; then
             for i in $(seq 0 7); do
-                ffmpeg -y -v error -i "$src" \
+                ( ffmpeg -y -v error -i "$src" \
                     -map "0:s:${i}?" -c copy -f sup \
-                    "$ENCODE_DIR/${clip}_sub_${i}.sup" &
+                    "$ENCODE_DIR/${clip}_sub_${i}.sup" || true ) &
             done
             wait
         fi
