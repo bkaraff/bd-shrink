@@ -677,14 +677,18 @@ if [[ -n "$EXTRAS_CLIPS" ]] && ! $NO_EXTRAS && ! $MOVIE_ONLY; then
         src="$SOURCE/STREAM/${clip}.m2ts"
         out_video="$ENCODE_DIR/${clip}_video.h264"
 
-        # Extract ALL audio tracks (sequentially, one per track)
+        # Extract ALL audio tracks (single ffmpeg call, all tracks)
         audio_tracks=0
         if [[ "$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$src" 2>/dev/null | wc -l)" -gt 0 ]]; then
-            for i in $(seq 0 7); do
-                ( ffmpeg -y -v error -i "$src" \
-                    -map "0:a:${i}?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" \
-                    "$ENCODE_DIR/${clip}_audio_${i}.ac3" || true )
-            done
+            ffmpeg -y -v error -i "$src" \
+                -map "0:a:0?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_0.ac3" \
+                -map "0:a:1?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_1.ac3" \
+                -map "0:a:2?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_2.ac3" \
+                -map "0:a:3?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_3.ac3" \
+                -map "0:a:4?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_4.ac3" \
+                -map "0:a:5?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_5.ac3" \
+                -map "0:a:6?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_6.ac3" \
+                -map "0:a:7?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_7.ac3" || true
         fi
 
         for i in $(seq 0 7); do
@@ -694,14 +698,18 @@ if [[ -n "$EXTRAS_CLIPS" ]] && ! $NO_EXTRAS && ! $MOVIE_ONLY; then
             fi
         done
 
-        # Extract ALL subtitle tracks (sequentially, one per track)
+        # Extract ALL subtitle tracks (single ffmpeg call)
         sub_tracks=0
         if [[ "$(ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$src" 2>/dev/null | wc -l)" -gt 0 ]]; then
-            for i in $(seq 0 7); do
-                ( ffmpeg -y -v error -i "$src" \
-                    -map "0:s:${i}?" -c copy -f sup \
-                    "$ENCODE_DIR/${clip}_sub_${i}.sup" || true )
-            done
+            ffmpeg -y -v error -i "$src" \
+                -map "0:s:0?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_0.sup" \
+                -map "0:s:1?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_1.sup" \
+                -map "0:s:2?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_2.sup" \
+                -map "0:s:3?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_3.sup" \
+                -map "0:s:4?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_4.sup" \
+                -map "0:s:5?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_5.sup" \
+                -map "0:s:6?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_6.sup" \
+                -map "0:s:7?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_7.sup" || true
         fi
         for i in $(seq 0 7); do
             out_s="$ENCODE_DIR/${clip}_sub_${i}.sup"
@@ -758,16 +766,18 @@ if [[ -n "$MAIN_CLIPS" ]]; then
         out_video="$ENCODE_DIR/${clip}_video.h264"
         pass_log="$WORK_DIR/x264_${clip}.log"
 
-        # Extract all audio tracks in a single ffmpeg pass (reads M2TS once)
+        # Extract all audio tracks (single ffmpeg call, all tracks)
         audio_tracks=0
         if [[ "$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$src" 2>/dev/null | wc -l)" -gt 0 ]]; then
-            for i in $(seq 0 7); do
-                ab="$COMMENTARY_AUDIO_BITRATE"
-                [[ $i -eq 0 ]] && ab="$MAIN_AUDIO_BITRATE"
-                ( ffmpeg -y -v error -i "$src" \
-                    -map "0:a:${i}?" -c:a ac3 -b:a "$ab" \
-                    "$ENCODE_DIR/${clip}_audio_${i}.ac3" || true )
-            done
+            ffmpeg -y -v error -i "$src" \
+                -map "0:a:0?" -c:a ac3 -b:a "$MAIN_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_0.ac3" \
+                -map "0:a:1?" -c:a ac3 -b:a "$COMMENTARY_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_1.ac3" \
+                -map "0:a:2?" -c:a ac3 -b:a "$COMMENTARY_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_2.ac3" \
+                -map "0:a:3?" -c:a ac3 -b:a "$COMMENTARY_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_3.ac3" \
+                -map "0:a:4?" -c:a ac3 -b:a "$COMMENTARY_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_4.ac3" \
+                -map "0:a:5?" -c:a ac3 -b:a "$COMMENTARY_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_5.ac3" \
+                -map "0:a:6?" -c:a ac3 -b:a "$COMMENTARY_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_6.ac3" \
+                -map "0:a:7?" -c:a ac3 -b:a "$COMMENTARY_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_7.ac3" || true
         fi
         for i in $(seq 0 7); do
             out_a="$ENCODE_DIR/${clip}_audio_${i}.ac3"
@@ -776,14 +786,18 @@ if [[ -n "$MAIN_CLIPS" ]]; then
             fi
         done
 
-        # Extract all subtitle tracks (sequentially)
+        # Extract all subtitle tracks (single ffmpeg call)
         sub_tracks=0
         if [[ "$(ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$src" 2>/dev/null | wc -l)" -gt 0 ]]; then
-            for i in $(seq 0 7); do
-                ( ffmpeg -y -v error -i "$src" \
-                    -map "0:s:${i}?" -c copy -f sup \
-                    "$ENCODE_DIR/${clip}_sub_${i}.sup" || true )
-            done
+            ffmpeg -y -v error -i "$src" \
+                -map "0:s:0?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_0.sup" \
+                -map "0:s:1?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_1.sup" \
+                -map "0:s:2?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_2.sup" \
+                -map "0:s:3?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_3.sup" \
+                -map "0:s:4?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_4.sup" \
+                -map "0:s:5?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_5.sup" \
+                -map "0:s:6?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_6.sup" \
+                -map "0:s:7?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_7.sup" || true
         fi
         for i in $(seq 0 7); do
             out_s="$ENCODE_DIR/${clip}_sub_${i}.sup"
