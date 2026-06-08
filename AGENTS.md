@@ -84,6 +84,11 @@ Reference disc for testing: `/mnt/downloads/Dolemite.1975.1080p.USA.Blu-Ray.AVC.
 - Source: 46.39 GB → target: 23 GB (BD25)
 - Expected budget: ~17 Mbps for both movies, ~30 Mbps with `--keep-one`
 
+## Known issues
+
+- **Output size over target**: Movie-only mode doesn't subtract audio/tsMuxeR overhead from video bitrate budget. A 23 GB target produces ~25 GB output with 8 audio tracks. Need to add audio size estimation to Phase 3 budget calculation.
+- **`((0++))` kills `set -e`**: `((counter++))` evaluates to 0 when counter starts at 0, which returns exit code 1 and kills the script. Always use `((++counter))` (pre-increment) instead. Affects audio_tracks/sub_tracks counting in Phase 4 and `a/s` loop counting in Phase 5.
+
 ## Gotchas
 
 - `git -C ~/projects/bd-shrink push` fails with "not a git repository" — use `workdir` parameter or `cd` instead

@@ -113,10 +113,9 @@ if [[ -d "$OUTPUT" ]] && ! $FORCE; then
 fi
 
 if [[ -z "$WORK_DIR" ]]; then
-    WORK_DIR=$(mktemp -d -t bd-shrink-XXXXXX)
-else
-    mkdir -p "$WORK_DIR"
+    WORK_DIR="$OUTPUT/.work"
 fi
+mkdir -p "$WORK_DIR"
 
 # Detect BD-J
 HAS_BDJ=false
@@ -513,28 +512,8 @@ menu_size = sum(clips.get(c, {}).get('size_bytes', 0) for c in menu_clips)
 orphan_size = sum(clips.get(c, {}).get('size_bytes', 0) for c in orphans)
 total_menu_size = menu_size + orphan_size
 
-# Check main movie clips for lossless audio to re-encode
-main_duration = 0
-main_audio_size = 0
-main_original_size = 0
-main_audio_tracks = 0
-for c in main_clips:
-    cs = clips.get(c, {})
-    main_original_size += cs.get('size_bytes', 0)
-    dur = cs.get('duration_sec', 0)
-    if dur > main_duration:
-        main_duration = dur
-    audios = cs.get('audio', [])
-    for i, a in enumerate(audios):
-        codec = a.get('codec', '')
-        # First track = main audio bitrate, rest = commentary bitrate
-        if i == 0:
-            rate = int('$MAIN_AUDIO_BITRATE'.replace('k', '')) * 1000
-        else:
-            main_audio_tracks += 1
-            rate = int('$COMMENTARY_AUDIO_BITRATE'.replace('k', '')) * 1000
-        if codec in ('dts', 'truehd', 'dts_hd_ma', 'pcm_s16le', 'pcm_s24le', 'pcm_s32le', 'flac'):
-            main_audio_size += (rate * dur) / 8  # bits to bytes
+# Compute main movie original size for reporting
+main_original_size = sum(clips.get(c, {}).get('size_bytes', 0) for c in main_clips)
 
 # Estimate extras re-encoded size
 extras_reencoded_size = 0
@@ -589,10 +568,23 @@ for pl_name in main_pls:
     if $PY_MOVIE_ONLY:
         break  # movie-only only encodes the first playlist
 
+main_audio_size = 0
+main_audio_tracks = 0
+if total_main_dur > 0:
+    # Audio overhead: extraction always attempts 8 tracks
+    # (matching seq 0 7 in Phase 4), 1 at MAIN, 7 at COMMENTARY bitrate
+    for i in range(8):
+        if i == 0:
+            rate = int('$MAIN_AUDIO_BITRATE'.replace('k', '')) * 1000
+        else:
+            main_audio_tracks += 1
+            rate = int('$COMMENTARY_AUDIO_BITRATE'.replace('k', '')) * 1000
+        main_audio_size += int((rate * total_main_dur) / 8)
+
 main_bitrate = 0
 if total_main_dur > 0:
-    # Subtract audio overhead
-    main_video_available = available_for_main - main_audio_size
+    # Subtract audio overhead + 5% safety margin for x264 overshoot
+    main_video_available = int((available_for_main - main_audio_size) * 0.95)
     main_bitrate = max(1000000, int((main_video_available * 8) / total_main_dur))
 
 budget = {
@@ -685,31 +677,35 @@ if [[ -n "$EXTRAS_CLIPS" ]] && ! $NO_EXTRAS && ! $MOVIE_ONLY; then
         src="$SOURCE/STREAM/${clip}.m2ts"
         out_video="$ENCODE_DIR/${clip}_video.h264"
 
-        # Extract ALL audio tracks
+        # Extract ALL audio tracks in a single pass
         audio_tracks=0
+        if [[ "$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$src" 2>/dev/null | wc -l)" -gt 0 ]]; then
+            ff_cmd=(ffmpeg -y -v error -i "$src")
+            for i in $(seq 0 7); do
+                ff_cmd+=(-map "0:a:${i}?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_${i}.ac3")
+            done
+            "${ff_cmd[@]}" || true
+        fi
         for i in $(seq 0 7); do
             out_a="$ENCODE_DIR/${clip}_audio_${i}.ac3"
-            ffmpeg -y -v error -i "$src" \
-                -map "0:a:${i}?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" \
-                "$out_a" 2>/dev/null || true
-            if [[ -f "$out_a" ]]; then
-                ((audio_tracks++))
-            else
-                break
+            if [[ -f "$out_a" && -s "$out_a" ]]; then
+                ((++audio_tracks))
             fi
         done
 
-        # Extract ALL subtitle tracks (PGS passthrough)
+        # Extract ALL subtitle tracks in a single pass
         sub_tracks=0
+        if [[ "$(ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$src" 2>/dev/null | wc -l)" -gt 0 ]]; then
+            ff_cmd=(ffmpeg -y -v error -i "$src")
+            for i in $(seq 0 7); do
+                ff_cmd+=(-map "0:s:${i}?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_${i}.sup")
+            done
+            "${ff_cmd[@]}" || true
+        fi
         for i in $(seq 0 7); do
             out_s="$ENCODE_DIR/${clip}_sub_${i}.sup"
-            ffmpeg -y -v error -i "$src" \
-                -map "0:s:${i}?" -c copy -f sup \
-                "$out_s" 2>/dev/null || true
-            if [[ -f "$out_s" ]]; then
-                ((sub_tracks++))
-            else
-                break
+            if [[ -f "$out_s" && -s "$out_s" ]]; then
+                ((++sub_tracks))
             fi
         done
 
@@ -761,34 +757,40 @@ if [[ -n "$MAIN_CLIPS" ]]; then
         out_video="$ENCODE_DIR/${clip}_video.h264"
         pass_log="$WORK_DIR/x264_${clip}.log"
 
-        # Extract audio tracks — track 0 at MAIN, rest at COMMENTARY bitrate
+        # Extract all audio tracks in a single ffmpeg pass (reads M2TS once)
         audio_tracks=0
+        if [[ "$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$src" 2>/dev/null | wc -l)" -gt 0 ]]; then
+            ff_cmd=(ffmpeg -y -v error -i "$src")
+            for i in $(seq 0 7); do
+                if [[ $i -eq 0 ]]; then
+                    ab="$MAIN_AUDIO_BITRATE"
+                else
+                    ab="$COMMENTARY_AUDIO_BITRATE"
+                fi
+                ff_cmd+=(-map "0:a:${i}?" -c:a ac3 -b:a "$ab" "$ENCODE_DIR/${clip}_audio_${i}.ac3")
+            done
+            "${ff_cmd[@]}" || true
+        fi
         for i in $(seq 0 7); do
             out_a="$ENCODE_DIR/${clip}_audio_${i}.ac3"
-            if [[ $i -eq 0 ]]; then
-                ab="$MAIN_AUDIO_BITRATE"
-            else
-                ab="$COMMENTARY_AUDIO_BITRATE"
-            fi
-            ffmpeg -y -v error -i "$src" \
-                -map "0:a:${i}?" -c:a ac3 -b:a "$ab" \
-                "$out_a" 2>/dev/null || true
-            if [[ -f "$out_a" ]]; then
-                ((audio_tracks++))
+            if [[ -f "$out_a" && -s "$out_a" ]]; then
+                ((++audio_tracks))
             fi
         done
 
-        # Extract subtitle tracks (PGS passthrough)
+        # Extract all subtitle tracks in a single pass
         sub_tracks=0
+        if [[ "$(ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$src" 2>/dev/null | wc -l)" -gt 0 ]]; then
+            ff_cmd=(ffmpeg -y -v error -i "$src")
+            for i in $(seq 0 7); do
+                ff_cmd+=(-map "0:s:${i}?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_${i}.sup")
+            done
+            "${ff_cmd[@]}" || true
+        fi
         for i in $(seq 0 7); do
             out_s="$ENCODE_DIR/${clip}_sub_${i}.sup"
-            ffmpeg -y -v error -i "$src" \
-                -map "0:s:${i}?" -c copy -f sup \
-                "$out_s" 2>/dev/null || true
-            if [[ -f "$out_s" ]]; then
-                ((sub_tracks++))
-            else
-                break
+            if [[ -f "$out_s" && -s "$out_s" ]]; then
+                ((++sub_tracks))
             fi
         done
 
@@ -802,7 +804,7 @@ if [[ -n "$MAIN_CLIPS" ]]; then
             -b:v "$MAIN_BITRATE" \
             -x264opts "$BD_X264_OPTS" \
             -pass 1 -passlogfile "$pass_log" \
-            -an -f null /dev/null 2>/dev/null || {
+            -an -f null /dev/null || {
                 warn "Pass 1 failed for ${clip}.m2ts"
                 continue
             }
@@ -813,7 +815,7 @@ if [[ -n "$MAIN_CLIPS" ]]; then
             -b:v "$MAIN_BITRATE" -maxrate "$MAIN_MAXRATE" -bufsize "$MAIN_BUFSIZE" \
             -x264opts "$BD_X264_OPTS" \
             -pass 2 -passlogfile "$pass_log" \
-            -an "$out_video" 2>/dev/null || {
+            -an "$out_video" || {
                 warn "Pass 2 failed for ${clip}.m2ts"
                 rm -f "${pass_log}" "${pass_log}.mbtree" "${pass_log}.cuted"
                 continue
@@ -899,9 +901,9 @@ META
     max_audio=0
     max_subs=0
     for clip in $main_clips; do
-        a=0; while [[ -f "$ENCODE_DIR/${clip}_audio_${a}.ac3" ]]; do ((a++)); done
+        a=0; while [[ -f "$ENCODE_DIR/${clip}_audio_${a}.ac3" ]]; do ((++a)); done
         ((a > max_audio)) && max_audio=$a
-        s=0; while [[ -f "$ENCODE_DIR/${clip}_sub_${s}.sup" ]]; do ((s++)); done
+        s=0; while [[ -f "$ENCODE_DIR/${clip}_sub_${s}.sup" ]]; do ((++s)); done
         ((s > max_subs)) && max_subs=$s
     done
 
