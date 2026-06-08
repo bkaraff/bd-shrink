@@ -751,10 +751,11 @@ for s in cs.get('streams',[]):
             -map 0:v:0 -c:v libx264 -preset medium -crf "$EXTRAS_CRF" \
             $video_filter \
             -x264opts "$BD_X264_OPTS:vbv-maxrate=12000:vbv-bufsize=12000" \
-            "$out_video" 2>/dev/null || {
-                warn "Failed to encode video for ${clip}.m2ts"
-                continue
-            }
+            "$out_video" 2>/dev/null; ff_rc=$?
+        if [[ $ff_rc -ne 0 ]]; then
+            warn "Failed to encode video for ${clip}.m2ts"
+            continue
+        fi
 
         log "    done (${audio_tracks} audio, ${sub_tracks} subtitle, video: $(du -h "$out_video" | cut -f1))"
     done
@@ -832,10 +833,11 @@ if [[ -n "$MAIN_CLIPS" ]]; then
             -b:v "$MAIN_BITRATE" \
             -x264opts "$BD_X264_OPTS" \
             -pass 1 -passlogfile "$pass_log" \
-            -an -f null /dev/null || {
-                warn "Pass 1 failed for ${clip}.m2ts"
-                continue
-            }
+            -an -f null /dev/null; ff_rc=$?
+        if [[ $ff_rc -ne 0 ]]; then
+            warn "Pass 1 failed for ${clip}.m2ts"
+            continue
+        fi
 
         # Pass 2
         ffmpeg -y -v error -i "$src" \
@@ -843,11 +845,12 @@ if [[ -n "$MAIN_CLIPS" ]]; then
             -b:v "$MAIN_BITRATE" -maxrate "$MAIN_MAXRATE" -bufsize "$MAIN_BUFSIZE" \
             -x264opts "$BD_X264_OPTS" \
             -pass 2 -passlogfile "$pass_log" \
-            -an "$out_video" || {
-                warn "Pass 2 failed for ${clip}.m2ts"
-                rm -f "${pass_log}" "${pass_log}.mbtree" "${pass_log}.cuted"
-                continue
-            }
+            -an "$out_video"; ff_rc=$?
+        if [[ $ff_rc -ne 0 ]]; then
+            warn "Pass 2 failed for ${clip}.m2ts"
+            rm -f "${pass_log}" "${pass_log}.mbtree" "${pass_log}.cuted"
+            continue
+        fi
 
         log "    done (${audio_tracks} audio, ${sub_tracks} subtitle, video: $(du -h "$out_video" | cut -f1))"
         rm -f "${pass_log}" "${pass_log}.mbtree" "${pass_log}.cuted"
