@@ -27,7 +27,11 @@ trap 'echo "FATAL: line $LINENO exit $?" >&2' ERR
 
 # Run ffmpeg via Python subprocess to avoid bash child-reaping crash (Fedora 44)
 run_ff() {
-    python3 -c "import subprocess, sys; r = subprocess.run(sys.argv[1:]); sys.exit(r.returncode)" "$@"
+    setsid -w python3 -c "
+import subprocess, sys
+r = subprocess.run(sys.argv[1:])
+sys.exit(r.returncode)
+" "$@"
 }
 
 usage() {
