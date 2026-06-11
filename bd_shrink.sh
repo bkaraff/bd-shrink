@@ -812,7 +812,7 @@ fi
 
 # Run ALL encoding in a single Python process.
 # Single child process instead of dozens — drastically reduces SIGCHLD crash risk.
-python3 << PYEOF
+python3 -u << PYEOF
 import json, os, subprocess, sys
 
 src_dir = '$SOURCE/STREAM'
@@ -830,28 +830,35 @@ commentary_audio_bitrate = '$COMMENTARY_AUDIO_BITRATE'
 extras_audio_bitrate = '$EXTRAS_AUDIO_BITRATE'
 extras_crf = '$EXTRAS_CRF'
 extras_scale = '$EXTRAS_SCALE'
-extras_clips_str = '''$EXTRAS_CLIPS'''
-main_clips_str = '''$MAIN_CLIPS'''
+extras_clips_str = """$EXTRAS_CLIPS"""
+main_clips_str = """$MAIN_CLIPS"""
 no_extras = '$NO_EXTRAS' == 'true'
 movie_only = '$MOVIE_ONLY' == 'true'
 
 def run_ff(cmd, out_file=None, pass_log_base=None):
-    """Run ffmpeg via subprocess. Returns True on success."""
+    """Run ffmpeg via subprocess. Returns True on success, False on failure."""
+    # Skip if output already exists (resumability)
+    if out_file and os.path.isfile(out_file) and os.path.getsize(out_file) > 0:
+        return True
+    if pass_log_base:
+        import glob
+        matches = glob.glob(pass_log_base + '*')
+        if matches:
+            return True
     try:
         r = subprocess.run(cmd, timeout=None, capture_output=False)
         if r.returncode == 0:
             return True
-        # If output file exists and has size, treat as success (pass might've finished early)
         if out_file and os.path.isfile(out_file) and os.path.getsize(out_file) > 0:
             return True
-        # If passlog file exists, pass 1 completed (stats were written)
         if pass_log_base:
             import glob
             matches = glob.glob(pass_log_base + '*')
             if matches:
                 return True
         return False
-    except Exception:
+    except Exception as e:
+        sys.stderr.write('  ffmpeg exception: {}\n'.format(e))
         return False
 
 # Parse clip lists
