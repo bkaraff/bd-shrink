@@ -800,76 +800,6 @@ if [[ -n "$EXTRAS_CLIPS" ]] && ! $NO_EXTRAS && ! $MOVIE_ONLY; then
     log "Encoding extras..."
     # Trim trailing newline from clip list
     EXTRAS_CLIPS="${EXTRAS_CLIPS%$'\n'}"
-
-    IFS=$'\n'
-    for clip in $EXTRAS_CLIPS; do
-        log "  Extra: ${clip}.m2ts"
-        src="$SOURCE/STREAM/${clip}.m2ts"
-        out_video="$ENCODE_DIR/${clip}_video.h264"
- 
-        # Look up pre-computed stream counts (no child process)
-        src_aud=${CLIP_AUD[$clip]-0}
-        src_sub=${CLIP_SUB[$clip]-0}
-        src_height=${CLIP_HEIGHT[$clip]-1080}
-
-        # Extract actual audio tracks (dynamic, no duplicate fallback)
-        audio_tracks=0
-        if [[ $src_aud -gt 0 ]]; then
-            audio_args=()
-            for ((i = 0; i < src_aud; i++)); do
-                audio_args+=(-map "0:a:$i" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_${i}.ac3")
-            done
-            if run_ff ffmpeg -y -v error -i "$src" "${audio_args[@]}"; then
-                audio_tracks=$src_aud
-            fi
-        fi
-
-        # Extract actual subtitle tracks (dynamic, no duplicate fallback)
-        sub_tracks=0
-        if [[ $src_sub -gt 0 ]]; then
-            sub_args=()
-            for ((i = 0; i < src_sub; i++)); do
-                sub_args+=(-map "0:s:$i" -c copy -f sup "$ENCODE_DIR/${clip}_sub_${i}.sup")
-            done
-            if run_ff ffmpeg -y -v error -i "$src" "${sub_args[@]}"; then
-                sub_tracks=$src_sub
-            fi
-        fi
-
-        if [[ $audio_tracks -eq 0 ]]; then
-            warn "  No audio extracted from ${clip}.m2ts — copying original"
-            run_ff cp "$src" "$ENCODE_DIR/${clip}.m2ts" || true
-            continue
-        fi
-
-        # Encode video to 720p
-        video_filter=()
-        if [[ "$src_height" -gt 720 ]]; then
-            video_filter=(-vf "scale=$EXTRAS_SCALE")
-        fi
-
-        extras_ok=false
-        for attempt in 1 2 3; do
-            if run_ff ffmpeg -y -v error -i "$src" \
-                -map 0:v:0 -c:v libx264 -preset medium -crf "$EXTRAS_CRF" \
-                "${video_filter[@]}" \
-                -x264opts "$BD_X264_OPTS:vbv-maxrate=12000:vbv-bufsize=12000" \
-                "$out_video"; then
-                extras_ok=true
-                break
-            fi
-            [[ -f "$out_video" && -s "$out_video" ]] && { extras_ok=true; break; }
-            warn "    retry $attempt"
-        done
-        if $extras_ok; then
-            log "    done (${audio_tracks} audio, ${sub_tracks} subtitle)"
-        else
-            warn "Failed to encode video for ${clip}.m2ts"
-        fi
-    done
-    unset IFS
-else
-    log "No extras to encode."
 fi
 
 # Encode main movie (two-pass VBR)
@@ -878,91 +808,225 @@ if [[ -n "$MAIN_CLIPS" ]]; then
     # Trim trailing newline from clip list
     MAIN_CLIPS="${MAIN_CLIPS%$'\n'}"
     log "  Bitrate: $(( MAIN_BITRATE / 1000000 )) Mbps, preset: $MAIN_PRESET"
-
-    for clip in $MAIN_CLIPS; do
-        log "  Main: ${clip}.m2ts"
-        src="$SOURCE/STREAM/${clip}.m2ts"
-        out_video="$ENCODE_DIR/${clip}_video.h264"
-        pass_log="$WORK_DIR/x264_${clip}.log"
-
-        # Look up pre-computed stream counts (no child process)
-        src_aud=${CLIP_AUD[$clip]-0}
-        src_sub=${CLIP_SUB[$clip]-0}
-
-        # Extract actual audio tracks (dynamic, no duplicate fallback)
-        audio_tracks=0
-        if [[ $src_aud -gt 0 ]]; then
-            audio_args=()
-            # Track 0 gets primary audio bitrate; tracks 1+ get commentary bitrate
-            audio_args+=(-map "0:a:0" -c:a ac3 -b:a "$MAIN_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_0.ac3")
-            for ((i = 1; i < src_aud; i++)); do
-                audio_args+=(-map "0:a:$i" -c:a ac3 -b:a "$COMMENTARY_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_${i}.ac3")
-            done
-            if run_ff ffmpeg -y -v error -i "$src" "${audio_args[@]}"; then
-                audio_tracks=$src_aud
-            fi
-        fi
-
-        # Extract actual subtitle tracks (dynamic, no duplicate fallback)
-        sub_tracks=0
-        if [[ $src_sub -gt 0 ]]; then
-            sub_args=()
-            for ((i = 0; i < src_sub; i++)); do
-                sub_args+=(-map "0:s:$i" -c copy -f sup "$ENCODE_DIR/${clip}_sub_${i}.sup")
-            done
-            if run_ff ffmpeg -y -v error -i "$src" "${sub_args[@]}"; then
-                sub_tracks=$src_sub
-            fi
-        fi
-
-        if [[ $audio_tracks -eq 0 ]]; then
-            warn "  No audio extracted from ${clip}.m2ts — encoding video-only"
-        fi
-
-        # Pass 1 (systemd-run survives kernel crash; retry if ffmpeg itself flakes)
-        pass_log_actual="${pass_log}-0.log"   # x264 appends -[thread#].log
-        rm -f "${pass_log}"*                  # clean orphaned passlogs from previous runs
-        for attempt in 1 2 3; do
-            if run_ff ffmpeg -y -v error -i "$src" \
-                -map 0:v:0 -c:v libx264 -preset "$MAIN_PRESET" \
-                -b:v "$MAIN_BITRATE" \
-                -x264opts "$BD_X264_OPTS" \
-                -pass 1 -passlogfile "$pass_log" \
-                -an -f null /dev/null; then
-                break
-            fi
-            [[ -f "${pass_log_actual}" ]] && break  # stats file exists = pass 1 actually finished
-            warn "Pass 1 attempt $attempt failed — retrying"
-        done
-        if [[ ! -f "${pass_log_actual}" ]]; then
-            warn "Pass 1 failed for ${clip}.m2ts — skipping"
-            continue
-        fi
-
-        # Pass 2 (retry on bash 5.3.9 non-deterministic crash)
-        for attempt in 1 2 3; do
-            if run_ff ffmpeg -y -v error -i "$src" \
-                -map 0:v:0 -c:v libx264 -preset "$MAIN_PRESET" \
-                -b:v "$MAIN_BITRATE" -maxrate "$MAIN_MAXRATE" -bufsize "$MAIN_BUFSIZE" \
-                -x264opts "$BD_X264_OPTS" \
-                -pass 2 -passlogfile "$pass_log" \
-                -an "$out_video"; then
-                break
-            fi
-            [[ -f "$out_video" && -s "$out_video" ]] && break
-            warn "Pass 2 attempt $attempt failed — retrying"
-            rm -f "${pass_log}"*
-        done
-        if [[ -f "$out_video" && -s "$out_video" ]]; then
-            log "    done (${audio_tracks} audio, ${sub_tracks} subtitle)"
-            rm -f "${pass_log}"*
-        else
-            warn "Pass 2 failed for ${clip}.m2ts after 3 attempts"
-            rm -f "${pass_log}"*
-            continue
-        fi
-    done
 fi
+
+# Run ALL encoding in a single Python process.
+# Single child process instead of dozens — drastically reduces SIGCHLD crash risk.
+python3 << PYEOF
+import json, os, subprocess, sys
+
+src_dir = '$SOURCE/STREAM'
+encode_dir = '$ENCODE_DIR'
+work_dir = '$WORK_DIR'
+clips_dir = '$CLIPS_DIR'
+inventory_file = '$INVENTORY_FILE'
+bd_x264_opts = '$BD_X264_OPTS'
+main_preset = '$MAIN_PRESET'
+main_bitrate = '$MAIN_BITRATE'
+main_maxrate = '$MAIN_MAXRATE'
+main_bufsize = '$MAIN_BUFSIZE'
+main_audio_bitrate = '$MAIN_AUDIO_BITRATE'
+commentary_audio_bitrate = '$COMMENTARY_AUDIO_BITRATE'
+extras_audio_bitrate = '$EXTRAS_AUDIO_BITRATE'
+extras_crf = '$EXTRAS_CRF'
+extras_scale = '$EXTRAS_SCALE'
+extras_clips_str = '''$EXTRAS_CLIPS'''
+main_clips_str = '''$MAIN_CLIPS'''
+no_extras = '$NO_EXTRAS' == 'true'
+movie_only = '$MOVIE_ONLY' == 'true'
+
+def run_ff(cmd, out_file=None, pass_log_base=None):
+    """Run ffmpeg via subprocess. Returns True on success."""
+    try:
+        r = subprocess.run(cmd, timeout=None, capture_output=False)
+        if r.returncode == 0:
+            return True
+        # If output file exists and has size, treat as success (pass might've finished early)
+        if out_file and os.path.isfile(out_file) and os.path.getsize(out_file) > 0:
+            return True
+        # If passlog file exists, pass 1 completed (stats were written)
+        if pass_log_base:
+            import glob
+            matches = glob.glob(pass_log_base + '*')
+            if matches:
+                return True
+        return False
+    except Exception:
+        return False
+
+# Parse clip lists
+extras_clips = [c.strip() for c in extras_clips_str.split('\n') if c.strip()]
+main_clips = [c.strip() for c in main_clips_str.split('\n') if c.strip()]
+
+# Read pre-computed clip metadata
+clip_data = {}
+with open('{}/.clip_precompute.txt'.format(work_dir)) as f:
+    for line in f:
+        line = line.strip()
+        if not line: continue
+        parts = line.split('|')
+        clip_data[parts[0]] = {'aud': int(parts[1]), 'sub': int(parts[2]), 'h': int(parts[3])}
+
+# --- Encode extras ---
+if not no_extras and not movie_only:
+    for i, clip in enumerate(extras_clips):
+        src = os.path.join(src_dir, '{}.m2ts'.format(clip))
+        out_video = os.path.join(encode_dir, '{}_video.h264'.format(clip))
+        cd = clip_data.get(clip, {'aud':0, 'sub':0, 'h':1080})
+        src_aud, src_sub, src_height = cd['aud'], cd['sub'], cd['h']
+
+        sys.stderr.write('  Extra: {}.m2ts\n'.format(clip))
+
+        # Audio extraction
+        audio_tracks = 0
+        if src_aud > 0:
+            audio_args = ['ffmpeg', '-y', '-v', 'error', '-i', src]
+            for ai in range(src_aud):
+                audio_args += ['-map', '0:a:{}'.format(ai), '-c:a', 'ac3',
+                               '-b:a', extras_audio_bitrate,
+                               os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, ai))]
+            if run_ff(audio_args):
+                audio_tracks = src_aud
+                # Verify all files exist
+                for ai in range(src_aud):
+                    if not os.path.isfile(os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, ai))):
+                        audio_tracks = 0
+                        break
+
+        # Subtitle extraction
+        sub_tracks = 0
+        if src_sub > 0:
+            sub_args = ['ffmpeg', '-y', '-v', 'error', '-i', src]
+            for si in range(src_sub):
+                sub_args += ['-map', '0:s:{}'.format(si), '-c', 'copy', '-f', 'sup',
+                             os.path.join(encode_dir, '{}_sub_{}.sup'.format(clip, si))]
+            if run_ff(sub_args):
+                sub_tracks = src_sub
+
+        if audio_tracks == 0:
+            # Copy original clip
+            subprocess.run(['cp', src, os.path.join(encode_dir, '{}.m2ts'.format(clip))], timeout=300)
+            sys.stderr.write('  (copied original)\n')
+            continue
+
+        # Video encoding
+        video_filter = []
+        if src_height > 720:
+            video_filter = ['-vf', 'scale={}'.format(extras_scale)]
+
+        x264_full_opts = '{}:vbv-maxrate=12000:vbv-bufsize=12000'.format(bd_x264_opts)
+        for attempt in range(3):
+            cmd = ['ffmpeg', '-y', '-v', 'error', '-i', src,
+                   '-map', '0:v:0', '-c:v', 'libx264', '-preset', 'medium',
+                   '-crf', str(extras_crf)] + video_filter + [
+                   '-x264opts', x264_full_opts, out_video]
+            if run_ff(cmd, out_file=out_video):
+                break
+            if attempt < 2:
+                sys.stderr.write('    retry {}\n'.format(attempt + 1))
+
+        if os.path.isfile(out_video) and os.path.getsize(out_video) > 0:
+            sys.stderr.write('    done ({} audio, {} subtitle)\n'.format(audio_tracks, sub_tracks))
+
+# --- Encode main movie ---
+if main_clips:
+    for clip in main_clips:
+        src = os.path.join(src_dir, '{}.m2ts'.format(clip))
+        out_video = os.path.join(encode_dir, '{}_video.h264'.format(clip))
+        pass_log = os.path.join(work_dir, 'x264_{}.log'.format(clip))
+        cd = clip_data.get(clip, {'aud':0, 'sub':0, 'h':1080})
+        src_aud, src_sub = cd['aud'], cd['sub']
+
+        sys.stderr.write('  Main: {}.m2ts\n'.format(clip))
+
+        # Audio extraction
+        audio_tracks = 0
+        if src_aud > 0:
+            audio_args = ['ffmpeg', '-y', '-v', 'error', '-i', src,
+                          '-map', '0:a:0', '-c:a', 'ac3', '-b:a', main_audio_bitrate,
+                          os.path.join(encode_dir, '{}_audio_0.ac3'.format(clip))]
+            for ai in range(1, src_aud):
+                audio_args += ['-map', '0:a:{}'.format(ai), '-c:a', 'ac3',
+                               '-b:a', commentary_audio_bitrate,
+                               os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, ai))]
+            if run_ff(audio_args):
+                audio_tracks = src_aud
+
+        # Subtitle extraction
+        sub_tracks = 0
+        if src_sub > 0:
+            sub_args = ['ffmpeg', '-y', '-v', 'error', '-i', src]
+            for si in range(src_sub):
+                sub_args += ['-map', '0:s:{}'.format(si), '-c', 'copy', '-f', 'sup',
+                             os.path.join(encode_dir, '{}_sub_{}.sup'.format(clip, si))]
+            if run_ff(sub_args):
+                sub_tracks = src_sub
+
+        if audio_tracks == 0:
+            sys.stderr.write('  (video-only)\n')
+
+        # Pass 1
+        pass_log_actual = pass_log + '-0.log'
+        # Clean orphaned passlogs
+        import glob
+        for f in glob.glob(pass_log + '*'):
+            try: os.remove(f)
+            except: pass
+
+        for attempt in range(3):
+            cmd = ['ffmpeg', '-y', '-v', 'error', '-i', src,
+                   '-map', '0:v:0', '-c:v', 'libx264', '-preset', main_preset,
+                   '-b:v', main_bitrate, '-x264opts', bd_x264_opts,
+                   '-pass', '1', '-passlogfile', pass_log,
+                   '-an', '-f', 'null', '/dev/null']
+            try:
+                r = subprocess.run(cmd, timeout=None, capture_output=False)
+                if r.returncode == 0:
+                    break
+            except:
+                pass
+            if os.path.isfile(pass_log_actual):
+                break  # stats file exists = pass 1 actually finished
+            sys.stderr.write('  Pass 1 attempt {} failed - retrying\n'.format(attempt + 1))
+
+        if not os.path.isfile(pass_log_actual):
+            sys.stderr.write('  Pass 1 failed - skipping\n')
+            continue
+
+        # Pass 2
+        for attempt in range(3):
+            cmd = ['ffmpeg', '-y', '-v', 'error', '-i', src,
+                   '-map', '0:v:0', '-c:v', 'libx264', '-preset', main_preset,
+                   '-b:v', main_bitrate, '-maxrate', main_maxrate, '-bufsize', main_bufsize,
+                   '-x264opts', bd_x264_opts,
+                   '-pass', '2', '-passlogfile', pass_log,
+                   '-an', out_video]
+            try:
+                r = subprocess.run(cmd, timeout=None, capture_output=False)
+                if r.returncode == 0:
+                    break
+            except:
+                pass
+            if os.path.isfile(out_video) and os.path.getsize(out_video) > 0:
+                break
+            sys.stderr.write('  Pass 2 attempt {} failed - retrying\n'.format(attempt + 1))
+            for f in glob.glob(pass_log + '*'):
+                try: os.remove(f)
+                except: pass
+
+        if os.path.isfile(out_video) and os.path.getsize(out_video) > 0:
+            sys.stderr.write('    done ({} audio, {} subtitle)\n'.format(audio_tracks, sub_tracks))
+            for f in glob.glob(pass_log + '*'):
+                try: os.remove(f)
+                except: pass
+        else:
+            sys.stderr.write('  Pass 2 failed after 3 attempts\n')
+            for f in glob.glob(pass_log + '*'):
+                try: os.remove(f)
+                except: pass
+
+PYEOF
+log "  Encoding complete."
 
 # ─── Phase 5: Rebuild ────────────────────────────────────────────────────────
 
