@@ -1,8 +1,12 @@
-#!/usr/bin/env bash
+#!/usr/bin/env zsh
 set -euo pipefail
+# Make word splitting on unquoted $var behave like bash (split on IFS)
+setopt SH_WORD_SPLIT
+# Don't error when a glob matches nothing (like bash shopt -s nullglob)
+setopt NULL_GLOB
 
 VERSION="0.1.0"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${0}")" && pwd)"
 
 # ─── defaults ────────────────────────────────────────────────────────────────
 TARGET_GB=23
@@ -21,17 +25,15 @@ COMMENTARY_AUDIO_BITRATE="128k"
 # ─── helpers ─────────────────────────────────────────────────────────────────
 die()  { echo "ERROR: $*" >&2; exit 1; }
 warn() { echo "WARN:  $*" >&2; }
-log()  { echo "[$(date +%H:%M:%S)] $*"; }
+log()  { printf '[%02d:%02d:%02d] %s\n' $((SECONDS/3600)) $(((SECONDS%3600)/60)) $((SECONDS%60)) "$*"; }
 info() { echo "       $*"; }
 trap 'echo "FATAL: line $LINENO exit $?" >&2' ERR
 
-# Run ffmpeg via Python subprocess to avoid bash child-reaping crash (Fedora 44)
+# Run ffmpeg via systemd-run --user --wait.
+# The command runs as a transient systemd service, NOT as a child of bash.
+# Even if the shell crashes, the service continues to completion.
 run_ff() {
-    setsid -w python3 -c "
-import subprocess, sys
-r = subprocess.run(sys.argv[1:])
-sys.exit(r.returncode)
-" "$@"
+    systemd-run --user --wait -q -u "bd_ff.${RANDOM}.$$" -- "$@"
 }
 
 usage() {
@@ -58,7 +60,7 @@ Options:
   --iso                  Output ISO instead of BDMV folder (combine with --movie-only)
   -f, --force            Overwrite output directory if it exists
   -n, --dry-run          Show what would be done without encoding
-  -w, --work DIR         Working directory (default: /tmp/bd-shrink-XXXXXX)
+  -w, --work DIR         Working directory (default: <output>.work)
   -h, --help             Show this help
 EOF
     exit 1
@@ -123,7 +125,7 @@ if [[ -d "$OUTPUT" ]] && ! $FORCE; then
 fi
 
 if [[ -z "$WORK_DIR" ]]; then
-    WORK_DIR="$OUTPUT/.work"
+    WORK_DIR="${OUTPUT}.work"
 fi
 mkdir -p "$WORK_DIR"
 
@@ -239,17 +241,37 @@ if $FORCE; then PY_FORCE="True"; else PY_FORCE="False"; fi
 CLIPS_DIR="$WORK_DIR/clips"
 mkdir -p "$CLIPS_DIR"
 
-for clip in $all_clips; do
-    clip_file="$SOURCE/STREAM/${clip}.m2ts"
-    if [[ ! -f "$clip_file" ]]; then
-        warn "Referenced clip not found: ${clip}.m2ts"
+python3 - "$SOURCE" "$CLIPS_DIR" << 'PYEOF'
+import json, os, subprocess, sys
+
+source = sys.argv[1]
+clips_dir = sys.argv[2]
+
+# Read playlists to get clip IDs
+playlists = json.load(open(os.path.join(os.path.dirname(clips_dir), 'playlists.json')))
+all_clips = set()
+for pl in playlists.values():
+    for item in pl['playitems']:
+        all_clips.add(item['clip'])
+
+for clip in sorted(all_clips):
+    clip_path = os.path.join(source, 'STREAM', f'{clip}.m2ts')
+    out_path = os.path.join(clips_dir, f'{clip}.json')
+    if not os.path.exists(clip_path):
         continue
-    fi
-    ffprobe -v error -show_entries stream=index,codec_type,codec_name,width,height,\
-duration,r_frame_rate,channels,channel_layout,sample_rate,bit_rate \
-        -show_entries format=size,duration,bit_rate \
-        -of json "$clip_file" > "$CLIPS_DIR/${clip}.json" 2>/dev/null || true
-done
+    try:
+        r = subprocess.run(
+            ['ffprobe', '-v', 'error',
+             '-show_entries', 'stream=index,codec_type,codec_name,width,height,duration,r_frame_rate,channels,channel_layout,sample_rate,bit_rate',
+             '-show_entries', 'format=size,duration,bit_rate',
+             '-of', 'json', clip_path],
+            capture_output=True, text=True, timeout=60)
+        data = json.loads(r.stdout) if r.stdout else {'streams': [], 'format': {}}
+    except Exception:
+        data = {'streams': [], 'format': {}}
+    with open(out_path, 'w') as f:
+        json.dump(data, f)
+PYEOF
 
 # Build combined inventory
 python3 << PYEOF > "$INVENTORY_FILE"
@@ -647,96 +669,157 @@ log "Phase 4: Encoding..."
 ENCODE_DIR="$WORK_DIR/encode"
 mkdir -p "$ENCODE_DIR"
 
-# Read budget to get bitrate
-MAIN_BITRATE=$(python3 -c "import json; print(json.load(open('$BUDGET_FILE'))['main_bitrate'])")
-MAIN_MAXRATE=$(python3 -c "print(int($MAIN_BITRATE * 1.1))")
-MAIN_BUFSIZE=$(python3 -c "print(int($MAIN_BITRATE * 1.5))")
+# Pre-compute ALL data for Phase 4 + Phase 5 in a single systemd-run call (no shell child processes)
+systemd-run --user --wait -q -u "bd_pre.${RANDOM}.$$" -- python3 -c "
+import json, os
+
+data = json.load(open('$INVENTORY_FILE'))
+budget = json.load(open('$BUDGET_FILE'))
+classify = json.load(open('$CLASSIFY_FILE'))
+base = int(budget['main_bitrate'])
+
+# --- Phase 4: clip metadata ---
+with open('$WORK_DIR/.clip_precompute.txt', 'w') as f:
+    for cid, c in data.get('clips', {}).items():
+        aud = len(c.get('audio', []))
+        sub = len(c.get('subtitles', []))
+        h = c.get('video', [{}])[0].get('height', 1080) if c.get('video') else 1080
+        f.write(f'{cid}|{aud}|{sub}|{h}\n')
+
+# --- Phase 4: budget values ---
+with open('$WORK_DIR/.budget_values.txt', 'w') as f:
+    f.write(f'{base}\n{int(base * 1.1)}\n{int(base * 1.5)}\n')
+
+# --- Phase 4: extras clips ---
+with open('$WORK_DIR/.extras_clips.txt', 'w') as f:
+    for cid, cd in budget['extras_details'].items():
+        if cd['will_reencode']:
+            f.write(f'{cid}\n')
+
+# --- Phase 4: main clips + Phase 5 data ---
+main_clips = []
+for pl_name in classify['main_movie']:
+    pd = classify['details'].get(pl_name, {})
+    main_clips = pd.get('clips', [])
+    break  # first main playlist
+
+with open('$WORK_DIR/.main_clips.txt', 'w') as f:
+    for cid in main_clips:
+        f.write(f'{cid}\n')
+
+# --- Phase 5: main playlist name ---
+main_pl_name = classify['main_movie'][0] if classify['main_movie'] else ''
+with open('$WORK_DIR/.main_playlist.txt', 'w') as f:
+    f.write(f'{main_pl_name}\n')
+
+# --- Phase 5: chapter timestamps ---
+pl = data['playlists'].get(main_pl_name, {})
+ct = pl.get('chapter_times', [])
+seen = {0}
+chapters = ['00:00:00']
+for t in ct:
+    h, m, s = int(t//3600), int((t%3600)//60), int(t%60)
+    ch = f'{h:02d}:{m:02d}:{s:02d}'
+    if t not in seen:
+        chapters.append(ch)
+        seen.add(t)
+with open('$WORK_DIR/.main_chapters.txt', 'w') as f:
+    f.write(';'.join(chapters) + '\n')
+
+# --- Phase 5: FPS of first clip ---
+fps = '24000/1001'
+if main_clips:
+    clip_json = os.path.join('$CLIPS_DIR', f'{main_clips[0]}.json')
+    try:
+        d = json.load(open(clip_json))
+        for s in d.get('streams', []):
+            if s.get('codec_type') == 'video':
+                fps = s.get('r_frame_rate', '24000/1001')
+                break
+    except:
+        pass
+with open('$WORK_DIR/.main_fps.txt', 'w') as f:
+    f.write(f'{fps}\n')
+
+# --- Phase 5: clip count, max audio, max subtitle ---
+with open('$WORK_DIR/.main_counts.txt', 'w') as f:
+    f.write(f'{len(main_clips)}\n')
+    # We cannot know audio/sub counts until after extraction, but we can store the clip IDs
+    f.write('0\n0\n')  # placeholder, recalculated in Phase 5 after encoding
+"
+
+# Read clip metadata into associative arrays (builtins only, no child processes)
+declare -A CLIP_AUD CLIP_SUB CLIP_HEIGHT
+while IFS='|' read -r cid aud sub h; do
+    CLIP_AUD[$cid]=$aud
+    CLIP_SUB[$cid]=$sub
+    CLIP_HEIGHT[$cid]=$h
+done < "$WORK_DIR/.clip_precompute.txt"
+
+# Read budget values (builtins only)
+{
+    read MAIN_BITRATE
+    read MAIN_MAXRATE
+    read MAIN_BUFSIZE
+} < "$WORK_DIR/.budget_values.txt"
+[[ -z "$MAIN_BITRATE" ]] && MAIN_BITRATE=20000000
+[[ -z "$MAIN_MAXRATE" ]] && MAIN_MAXRATE=22000000
+[[ -z "$MAIN_BUFSIZE" ]] && MAIN_BUFSIZE=30000000
+
+# Read clip lists (builtins only, use read loop for line-separated lists)
+EXTRAS_CLIPS=""
+while read -r cid; do
+    EXTRAS_CLIPS+="$cid"$'\n'
+done < "$WORK_DIR/.extras_clips.txt"
+
+MAIN_CLIPS=""
+while read -r cid; do
+    MAIN_CLIPS+="$cid"$'\n'
+done < "$WORK_DIR/.main_clips.txt"
 
 # Common x264 BD-compat opts
 BD_X264_OPTS="bluray-compat=1:vbv-maxrate=40000:vbv-bufsize=30000"
 
-# Get clips to re-encode
-EXTRAS_CLIPS=$(python3 -c "
-import json
-b = json.load(open('$BUDGET_FILE'))
-for cid, cd in b['extras_details'].items():
-    if cd['will_reencode']:
-        print(cid)
-")
-
-MAIN_CLIPS=$(python3 -c "
-import json
-clf = json.load(open('$CLASSIFY_FILE'))
-main_pls = clf['main_movie']
-clips = set()
-for pl_name in main_pls:
-    pd = clf['details'].get(pl_name, {})
-    for c in pd.get('clips', []):
-        clips.add(c)
-for c in sorted(clips):
-    print(c)
-")
-
 # Encode extras (single-pass CRF, downscale to 720p)
 if [[ -n "$EXTRAS_CLIPS" ]] && ! $NO_EXTRAS && ! $MOVIE_ONLY; then
-    log "Encoding extras ($(echo "$EXTRAS_CLIPS" | wc -l) clips)..."
+    log "Encoding extras..."
+    # Trim trailing newline from clip list
+    EXTRAS_CLIPS="${EXTRAS_CLIPS%$'\n'}"
 
     IFS=$'\n'
     for clip in $EXTRAS_CLIPS; do
         log "  Extra: ${clip}.m2ts"
         src="$SOURCE/STREAM/${clip}.m2ts"
         out_video="$ENCODE_DIR/${clip}_video.h264"
+ 
+        # Look up pre-computed stream counts (no child process)
+        src_aud=${CLIP_AUD[$clip]-0}
+        src_sub=${CLIP_SUB[$clip]-0}
+        src_height=${CLIP_HEIGHT[$clip]-1080}
 
-        # Extract ALL audio tracks (single run_ff ffmpeg call, all tracks)
+        # Extract actual audio tracks (dynamic, no duplicate fallback)
         audio_tracks=0
-        if [[ "$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$src" 2>/dev/null | wc -l)" -gt 0 ]]; then
-            if run_ff ffmpeg -y -v error -i "$src" \
-                -map "0:a:0?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_0.ac3" \
-                -map "0:a:1?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_1.ac3" \
-                -map "0:a:2?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_2.ac3" \
-                -map "0:a:3?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_3.ac3" \
-                -map "0:a:4?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_4.ac3" \
-                -map "0:a:5?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_5.ac3" \
-                -map "0:a:6?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_6.ac3" \
-                -map "0:a:7?" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_7.ac3"; then
-                ff_rc=0
-            else
-                ff_rc=$?
-                echo "WARN: run_ff ffmpeg audio exit $ff_rc for $clip" >&2
+        if [[ $src_aud -gt 0 ]]; then
+            audio_args=()
+            for ((i = 0; i < src_aud; i++)); do
+                audio_args+=(-map "0:a:$i" -c:a ac3 -b:a "$EXTRAS_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_${i}.ac3")
+            done
+            if run_ff ffmpeg -y -v error -i "$src" "${audio_args[@]}"; then
+                audio_tracks=$src_aud
             fi
         fi
 
-        for i in $(seq 0 7); do
-            out_a="$ENCODE_DIR/${clip}_audio_${i}.ac3"
-            if [[ -f "$out_a" && -s "$out_a" ]]; then
-                ((++audio_tracks))
-            fi
-        done
-
-        # Extract ALL subtitle tracks (single run_ff ffmpeg call)
+        # Extract actual subtitle tracks (dynamic, no duplicate fallback)
         sub_tracks=0
-        if [[ "$(ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$src" 2>/dev/null | wc -l)" -gt 0 ]]; then
-            if run_ff ffmpeg -y -v error -i "$src" \
-                -map "0:s:0?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_0.sup" \
-                -map "0:s:1?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_1.sup" \
-                -map "0:s:2?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_2.sup" \
-                -map "0:s:3?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_3.sup" \
-                -map "0:s:4?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_4.sup" \
-                -map "0:s:5?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_5.sup" \
-                -map "0:s:6?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_6.sup" \
-                -map "0:s:7?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_7.sup"; then
-                ff_rc=0
-            else
-                ff_rc=$?
-                echo "WARN: run_ff ffmpeg sub exit $ff_rc for $clip" >&2
+        if [[ $src_sub -gt 0 ]]; then
+            sub_args=()
+            for ((i = 0; i < src_sub; i++)); do
+                sub_args+=(-map "0:s:$i" -c copy -f sup "$ENCODE_DIR/${clip}_sub_${i}.sup")
+            done
+            if run_ff ffmpeg -y -v error -i "$src" "${sub_args[@]}"; then
+                sub_tracks=$src_sub
             fi
         fi
-        for i in $(seq 0 7); do
-            out_s="$ENCODE_DIR/${clip}_sub_${i}.sup"
-            if [[ -f "$out_s" && -s "$out_s" ]]; then
-                ((++sub_tracks))
-            fi
-        done
 
         if [[ $audio_tracks -eq 0 ]]; then
             warn "  No audio extracted from ${clip}.m2ts — copying original"
@@ -746,24 +829,24 @@ if [[ -n "$EXTRAS_CLIPS" ]] && ! $NO_EXTRAS && ! $MOVIE_ONLY; then
 
         # Encode video to 720p
         video_filter=()
-        src_height=$(python3 -c "
-import json
-cs = json.load(open('$CLIPS_DIR/${clip}.json'))
-for s in cs.get('streams',[]):
-    if s.get('codec_type')=='video':
-        print(s.get('height',0))
-        break
-" 2>/dev/null || echo "1080")
-
         if [[ "$src_height" -gt 720 ]]; then
             video_filter=(-vf "scale=$EXTRAS_SCALE")
         fi
 
-        if run_ff ffmpeg -y -v error -i "$src" \
-            -map 0:v:0 -c:v libx264 -preset medium -crf "$EXTRAS_CRF" \
-            "${video_filter[@]}" \
-            -x264opts "$BD_X264_OPTS:vbv-maxrate=12000:vbv-bufsize=12000" \
-            "$out_video"; then
+        extras_ok=false
+        for attempt in 1 2 3; do
+            if run_ff ffmpeg -y -v error -i "$src" \
+                -map 0:v:0 -c:v libx264 -preset medium -crf "$EXTRAS_CRF" \
+                "${video_filter[@]}" \
+                -x264opts "$BD_X264_OPTS:vbv-maxrate=12000:vbv-bufsize=12000" \
+                "$out_video"; then
+                extras_ok=true
+                break
+            fi
+            [[ -f "$out_video" && -s "$out_video" ]] && { extras_ok=true; break; }
+            warn "    retry $attempt"
+        done
+        if $extras_ok; then
             log "    done (${audio_tracks} audio, ${sub_tracks} subtitle)"
         else
             warn "Failed to encode video for ${clip}.m2ts"
@@ -776,7 +859,9 @@ fi
 
 # Encode main movie (two-pass VBR)
 if [[ -n "$MAIN_CLIPS" ]]; then
-    log "Encoding main movie ($(echo "$MAIN_CLIPS" | wc -l) clips)..."
+    log "Encoding main movie..."
+    # Trim trailing newline from clip list
+    MAIN_CLIPS="${MAIN_CLIPS%$'\n'}"
     log "  Bitrate: $(( MAIN_BITRATE / 1000000 )) Mbps, preset: $MAIN_PRESET"
 
     for clip in $MAIN_CLIPS; do
@@ -785,85 +870,80 @@ if [[ -n "$MAIN_CLIPS" ]]; then
         out_video="$ENCODE_DIR/${clip}_video.h264"
         pass_log="$WORK_DIR/x264_${clip}.log"
 
-        # Extract all audio tracks (single run_ff ffmpeg call)
-        audio_tracks=0
-        if [[ "$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$src" 2>/dev/null | wc -l)" -gt 0 ]]; then
-            if run_ff ffmpeg -y -v error -i "$src" \
-                -map "0:a:0?" -c:a ac3 -b:a "$MAIN_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_0.ac3" \
-                -map "0:a:1?" -c:a ac3 -b:a "$COMMENTARY_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_1.ac3" \
-                -map "0:a:2?" -c:a ac3 -b:a "$COMMENTARY_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_2.ac3" \
-                -map "0:a:3?" -c:a ac3 -b:a "$COMMENTARY_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_3.ac3" \
-                -map "0:a:4?" -c:a ac3 -b:a "$COMMENTARY_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_4.ac3" \
-                -map "0:a:5?" -c:a ac3 -b:a "$COMMENTARY_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_5.ac3" \
-                -map "0:a:6?" -c:a ac3 -b:a "$COMMENTARY_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_6.ac3" \
-                -map "0:a:7?" -c:a ac3 -b:a "$COMMENTARY_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_7.ac3"; then
-                ff_rc=0
-            else
-                ff_rc=$?
-                echo "WARN: run_ff ffmpeg audio exit $ff_rc for $clip" >&2
-            fi
-        fi
-        for i in $(seq 0 7); do
-            out_a="$ENCODE_DIR/${clip}_audio_${i}.ac3"
-            if [[ -f "$out_a" && -s "$out_a" ]]; then
-                ((++audio_tracks))
-            fi
-        done
+        # Look up pre-computed stream counts (no child process)
+        src_aud=${CLIP_AUD[$clip]-0}
+        src_sub=${CLIP_SUB[$clip]-0}
 
-        # Extract all subtitle tracks (single run_ff ffmpeg call)
-        sub_tracks=0
-        if [[ "$(ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$src" 2>/dev/null | wc -l)" -gt 0 ]]; then
-            if run_ff ffmpeg -y -v error -i "$src" \
-                -map "0:s:0?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_0.sup" \
-                -map "0:s:1?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_1.sup" \
-                -map "0:s:2?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_2.sup" \
-                -map "0:s:3?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_3.sup" \
-                -map "0:s:4?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_4.sup" \
-                -map "0:s:5?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_5.sup" \
-                -map "0:s:6?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_6.sup" \
-                -map "0:s:7?" -c copy -f sup "$ENCODE_DIR/${clip}_sub_7.sup"; then
-                ff_rc=0
-            else
-                ff_rc=$?
-                echo "WARN: run_ff ffmpeg sub exit $ff_rc for $clip" >&2
+        # Extract actual audio tracks (dynamic, no duplicate fallback)
+        audio_tracks=0
+        if [[ $src_aud -gt 0 ]]; then
+            audio_args=()
+            # Track 0 gets primary audio bitrate; tracks 1+ get commentary bitrate
+            audio_args+=(-map "0:a:0" -c:a ac3 -b:a "$MAIN_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_0.ac3")
+            for ((i = 1; i < src_aud; i++)); do
+                audio_args+=(-map "0:a:$i" -c:a ac3 -b:a "$COMMENTARY_AUDIO_BITRATE" "$ENCODE_DIR/${clip}_audio_${i}.ac3")
+            done
+            if run_ff ffmpeg -y -v error -i "$src" "${audio_args[@]}"; then
+                audio_tracks=$src_aud
             fi
         fi
-        for i in $(seq 0 7); do
-            out_s="$ENCODE_DIR/${clip}_sub_${i}.sup"
-            if [[ -f "$out_s" && -s "$out_s" ]]; then
-                ((++sub_tracks))
+
+        # Extract actual subtitle tracks (dynamic, no duplicate fallback)
+        sub_tracks=0
+        if [[ $src_sub -gt 0 ]]; then
+            sub_args=()
+            for ((i = 0; i < src_sub; i++)); do
+                sub_args+=(-map "0:s:$i" -c copy -f sup "$ENCODE_DIR/${clip}_sub_${i}.sup")
+            done
+            if run_ff ffmpeg -y -v error -i "$src" "${sub_args[@]}"; then
+                sub_tracks=$src_sub
             fi
-        done
+        fi
 
         if [[ $audio_tracks -eq 0 ]]; then
             warn "  No audio extracted from ${clip}.m2ts — encoding video-only"
         fi
 
-        # Pass 1
-        if run_ff ffmpeg -y -v error -i "$src" \
-            -map 0:v:0 -c:v libx264 -preset "$MAIN_PRESET" \
-            -b:v "$MAIN_BITRATE" \
-            -x264opts "$BD_X264_OPTS" \
-            -pass 1 -passlogfile "$pass_log" \
-            -an -f null /dev/null; then
-            :
-        else
-            warn "Pass 1 failed for ${clip}.m2ts"
+        # Pass 1 (systemd-run survives kernel crash; retry if ffmpeg itself flakes)
+        pass_log_actual="${pass_log}-0.log"   # x264 appends -[thread#].log
+        rm -f "${pass_log}"*                  # clean orphaned passlogs from previous runs
+        for attempt in 1 2 3; do
+            if run_ff ffmpeg -y -v error -i "$src" \
+                -map 0:v:0 -c:v libx264 -preset "$MAIN_PRESET" \
+                -b:v "$MAIN_BITRATE" \
+                -x264opts "$BD_X264_OPTS" \
+                -pass 1 -passlogfile "$pass_log" \
+                -an -f null /dev/null; then
+                break
+            fi
+            [[ -f "${pass_log_actual}" ]] && break  # stats file exists = pass 1 actually finished
+            warn "Pass 1 attempt $attempt failed — retrying"
+        done
+        if [[ ! -f "${pass_log_actual}" ]]; then
+            warn "Pass 1 failed for ${clip}.m2ts — skipping"
             continue
         fi
 
-        # Pass 2
-        if run_ff ffmpeg -y -v error -i "$src" \
-            -map 0:v:0 -c:v libx264 -preset "$MAIN_PRESET" \
-            -b:v "$MAIN_BITRATE" -maxrate "$MAIN_MAXRATE" -bufsize "$MAIN_BUFSIZE" \
-            -x264opts "$BD_X264_OPTS" \
-            -pass 2 -passlogfile "$pass_log" \
-            -an "$out_video"; then
+        # Pass 2 (retry on bash 5.3.9 non-deterministic crash)
+        for attempt in 1 2 3; do
+            if run_ff ffmpeg -y -v error -i "$src" \
+                -map 0:v:0 -c:v libx264 -preset "$MAIN_PRESET" \
+                -b:v "$MAIN_BITRATE" -maxrate "$MAIN_MAXRATE" -bufsize "$MAIN_BUFSIZE" \
+                -x264opts "$BD_X264_OPTS" \
+                -pass 2 -passlogfile "$pass_log" \
+                -an "$out_video"; then
+                break
+            fi
+            [[ -f "$out_video" && -s "$out_video" ]] && break
+            warn "Pass 2 attempt $attempt failed — retrying"
+            rm -f "${pass_log}"*
+        done
+        if [[ -f "$out_video" && -s "$out_video" ]]; then
             log "    done (${audio_tracks} audio, ${sub_tracks} subtitle)"
-            rm -f "${pass_log}" "${pass_log}.mbtree" "${pass_log}.cuted"
+            rm -f "${pass_log}"*
         else
-            warn "Pass 2 failed for ${clip}.m2ts"
-            rm -f "${pass_log}" "${pass_log}.mbtree" "${pass_log}.cuted"
+            warn "Pass 2 failed for ${clip}.m2ts after 3 attempts"
+            rm -f "${pass_log}"*
             continue
         fi
     done
@@ -881,69 +961,25 @@ if $MOVIE_ONLY; then
     # ────────────────────────────────────────────────────────────────────
     log "  Movie-only mode: authoring fresh BD..."
 
-    # Identify the main movie playlist
-    main_pl=$(python3 -c "
-import json, sys
-clf = json.load(open('$CLASSIFY_FILE'))
-if not clf['main_movie']:
-    print('', file=sys.stderr)
-    sys.exit(1)
-print(clf['main_movie'][0])") || die "No main movie found — cannot proceed with --movie-only"
-
-    main_clips=$(python3 -c "
-import json
-clf = json.load(open('$CLASSIFY_FILE'))
-for c in clf['details']['$main_pl']['clips']:
-    print(c)")
-
-    # Get chapter timestamps from the original playlist
-    main_chapters=$(python3 -c "
-import json
-inv = json.load(open('$INVENTORY_FILE'))
-pl = inv['playlists']['$main_pl']
-ct = pl.get('chapter_times', [])
-parts = ['00:00:00']
-for t in ct:
-    h = int(t // 3600)
-    m = int((t % 3600) // 60)
-    s = int(t % 60)
-    parts.append(f'{h:02d}:{m:02d}:{s:02d}')
-# Remove duplicates and keep unique sorted
-seen = set()
-unique = []
-for p in parts:
-    if p not in seen:
-        unique.append(p)
-        seen.add(p)
-print(';'.join(unique))")
-
-    # Read fps from the first clip's probe
-    first_clip=$(echo "$main_clips" | head -1)
-    fps=$(python3 -c "
-import json
-with open('$CLIPS_DIR/${first_clip}.json') as f:
-    d = json.load(f)
-for s in d.get('streams', []):
-    if s.get('codec_type') == 'video':
-        print(s.get('r_frame_rate', '24000/1001'))
-        break
-" 2>/dev/null || echo "24000/1001")
-
-    clip_count=$(echo "$main_clips" | wc -l)
+    # Read pre-computed Phase 5 data (builtins only, no child processes)
+    read main_pl < "$WORK_DIR/.main_playlist.txt"
+    read fps < "$WORK_DIR/.main_fps.txt"
+    read -r main_chapters < "$WORK_DIR/.main_chapters.txt"
+    main_chapters="${main_chapters%$'\n'}"
 
     META_DIR="$WORK_DIR/meta"
     mkdir -p "$META_DIR"
     META_FILE="$META_DIR/movie.meta"
 
-    # Write MUXOPT header with chapters
-    cat > "$META_FILE" << META
-MUXOPT --no-pcr-on-video-pid --new-audio-pes --vbr --blu-ray --custom-chapters=${main_chapters}
-META
+    # Write MUXOPT header with chapters (use exec to avoid subshell)
+    {
+        echo "MUXOPT --no-pcr-on-video-pid --new-audio-pes --vbr --blu-ray --custom-chapters=${main_chapters}"
+    } > "$META_FILE"
 
-    # Count max audio/subtitle tracks across all clips
+    # Count max audio/subtitle tracks across all clips (builtins only)
     max_audio=0
     max_subs=0
-    for clip in $main_clips; do
+    for clip in $MAIN_CLIPS; do
         a=0; while [[ -f "$ENCODE_DIR/${clip}_audio_${a}.ac3" ]]; do ((++a)); done
         ((a > max_audio)) && max_audio=$a
         s=0; while [[ -f "$ENCODE_DIR/${clip}_sub_${s}.sup" ]]; do ((++s)); done
@@ -952,7 +988,7 @@ META
 
     # Write video tracks
     first=true
-    for clip in $main_clips; do
+    for clip in $MAIN_CLIPS; do
         vf="$ENCODE_DIR/${clip}_video.h264"
         [[ -f "$vf" ]] || { warn "Missing video for clip ${clip}"; continue; }
         if $first; then
@@ -964,9 +1000,9 @@ META
     done
 
     # Write audio tracks (grouped by track index across clips)
-    for aidx in $(seq 0 $((max_audio - 1))); do
+    for ((aidx = 0; aidx < max_audio; aidx++)); do
         first=true
-        for clip in $main_clips; do
+        for clip in $MAIN_CLIPS; do
             af="$ENCODE_DIR/${clip}_audio_${aidx}.ac3"
             [[ -f "$af" ]] || continue
             if $first; then
@@ -979,9 +1015,9 @@ META
     done
 
     # Write subtitle tracks (grouped by track index across clips)
-    for sidx in $(seq 0 $((max_subs - 1))); do
+    for ((sidx = 0; sidx < max_subs; sidx++)); do
         first=true
-        for clip in $main_clips; do
+        for clip in $MAIN_CLIPS; do
             sf="$ENCODE_DIR/${clip}_sub_${sidx}.sup"
             [[ -f "$sf" ]] || continue
             if $first; then
@@ -993,7 +1029,11 @@ META
         done
     done
 
-    log "  Running tsMuxeR ($(echo "$main_clips" | wc -l) clip(s), ${max_audio} audio, ${max_subs} subtitle)..."
+    # Dump meta file for debugging
+    log "  tsMuxeR meta file:"
+    while read -r meta_line; do log "    $meta_line"; done < "$META_FILE"
+
+    log "  Running tsMuxeR..."
 
     if $OUTPUT_ISO; then
         ISO_OUTPUT="${OUTPUT%.iso}.iso"
@@ -1003,7 +1043,6 @@ META
         }
         log "  ISO created: $ISO_OUTPUT"
     else
-        rm -rf "$DST" 2>/dev/null || true
         tsMuxeR "$META_FILE" "$DST" > /dev/null 2>&1 || {
             die "tsMuxeR authoring failed"
         }
