@@ -1120,20 +1120,10 @@ if $MOVIE_ONLY; then
     while read -r meta_line; do log "    $meta_line"; done < "$META_FILE"
 
     log "  Running tsMuxeR..."
-
-    if $OUTPUT_ISO; then
-        ISO_OUTPUT="${OUTPUT%.iso}.iso"
-        DST="$ISO_OUTPUT"
-        tsMuxeR "$META_FILE" "$ISO_OUTPUT" > /dev/null 2>&1 || {
-            die "tsMuxeR authoring failed"
-        }
-        log "  ISO created: $ISO_OUTPUT"
-    else
-        tsMuxeR "$META_FILE" "$DST" > /dev/null 2>&1 || {
-            die "tsMuxeR authoring failed"
-        }
-        log "  BDMV folder created: $DST"
-    fi
+    tsMuxeR "$META_FILE" "$DST" > /dev/null 2>&1 || {
+        die "tsMuxeR authoring failed"
+    }
+    log "  BDMV folder created: $DST"
 
     log "  Fresh BD structure complete"
 else
@@ -1248,6 +1238,40 @@ else
     cp "$DST/BDMV/CLIPINF/"*.clpi "$DST/BDMV/BACKUP/CLIPINF/" 2>/dev/null || true
 
 fi  # end if MOVIE_ONLY
+
+# Create ISO if requested (wraps the BDMV folder created above)
+if $OUTPUT_ISO; then
+    ISO_OUT="${OUTPUT%.iso}.iso"
+    log "Creating ISO: ${ISO_OUT}..."
+
+    creator=""
+    command -v genisoimage &>/dev/null && creator="genisoimage"
+    [[ -z "$creator" ]] && command -v mkisofs &>/dev/null && creator="mkisofs"
+    [[ -z "$creator" ]] && command -v xorriso &>/dev/null && creator="xorriso"
+
+    if [[ -z "$creator" ]]; then
+        warn "No ISO creation tool found (genisoimage/mkisofs/xorriso). Install one and run:"
+        warn "  mkisofs -udf -V 'BD_SHRINK' -o ${ISO_OUT} ${DST}"
+    else
+        case "$creator" in
+            genisoimage|mkisofs)
+                $creator -udf -V "BD_SHRINK" -o "$ISO_OUT" "$DST" 2>/dev/null || {
+                    warn "ISO creation failed with $creator"
+                }
+                ;;
+            xorriso)
+                xorriso -as mkisofs -udf -V "BD_SHRINK" -o "$ISO_OUT" "$DST" 2>/dev/null || {
+                    warn "ISO creation failed with xorriso"
+                }
+                ;;
+        esac
+        if [[ -f "$ISO_OUT" ]] && [[ -s "$ISO_OUT" ]]; then
+            log "ISO created: $ISO_OUT ($(du -sh "$ISO_OUT" 2>/dev/null | cut -f1))"
+        else
+            warn "ISO creation failed — BDMV folder remains at $DST"
+        fi
+    fi
+fi
 
 # ─── Phase 6: Validate ───────────────────────────────────────────────────────
 
