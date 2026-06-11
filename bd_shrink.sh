@@ -838,7 +838,7 @@ if [[ -n "$EXTRAS_CLIPS" ]] && ! $NO_EXTRAS && ! $MOVIE_ONLY; then
 
         if [[ $audio_tracks -eq 0 ]]; then
             warn "  No audio extracted from ${clip}.m2ts — copying original"
-            cp "$src" "$ENCODE_DIR/${clip}.m2ts"
+            run_ff cp "$src" "$ENCODE_DIR/${clip}.m2ts" || true
             continue
         fi
 
@@ -1126,7 +1126,7 @@ else
 
         log "  Remuxing: ${cid}.m2ts ($a audio, $s subtitle)"
         mkdir -p "$tmpout" 2>/dev/null || true
-        tsMuxeR "$meta" "$tmpout" > /dev/null 2>&1 || {
+        run_ff tsMuxeR "$meta" "$tmpout" || {
             warn "tsMuxeR failed for clip ${cid}"
             continue
         }
@@ -1135,8 +1135,8 @@ else
         local new_m2ts=("$tmpout/BDMV/STREAM/"*.m2ts(N))
         local new_clpi=("$tmpout/BDMV/CLIPINF/"*.clpi(N))
         if [[ -n "${new_m2ts[1]:-}" ]] && [[ -n "${new_clpi[1]:-}" ]]; then
-            cp "$new_m2ts" "$DST/BDMV/STREAM/${cid}.m2ts"
-            cp "$new_clpi" "$DST/BDMV/CLIPINF/${cid}.clpi"
+            run_ff cp "$new_m2ts" "$DST/BDMV/STREAM/${cid}.m2ts" || true
+            run_ff cp "$new_clpi" "$DST/BDMV/CLIPINF/${cid}.clpi" || true
             log "    done: ${cid}.m2ts"
         else
             warn "tsMuxeR produced no output for ${cid}"
@@ -1158,8 +1158,8 @@ else
             [[ -f "$DST/BDMV/STREAM/${cid}.m2ts" ]] && continue
             warn "  Falling back to original for ${cid}.m2ts"
         fi
-        cp "$SOURCE/STREAM/${cid}.m2ts" "$DST/BDMV/STREAM/${cid}.m2ts" 2>/dev/null || true
-        cp "$SOURCE/CLIPINF/${cid}.clpi" "$DST/BDMV/CLIPINF/${cid}.clpi" 2>/dev/null || true
+        run_ff cp "$SOURCE/STREAM/${cid}.m2ts" "$DST/BDMV/STREAM/${cid}.m2ts" || true
+        run_ff cp "$SOURCE/CLIPINF/${cid}.clpi" "$DST/BDMV/CLIPINF/${cid}.clpi" || true
     done
 
     # Copy all MPLS files
