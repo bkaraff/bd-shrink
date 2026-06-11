@@ -2,7 +2,9 @@
 
 Shrink BD50 Blu-ray backups to BD25 (or any target size) on Linux — preserving menus or movie-only.
 
-A Linux-native alternative to BD Rebuilder that uses `ffmpeg`, `tsMuxeR`, and `libbluray` to re-encode Blu-ray content while keeping the original structure intact.
+A Linux-native alternative to BD Rebuilder that uses `ffmpeg` + `tsMuxeR` to re-encode Blu-ray content while keeping the original structure intact.
+
+**Requires zsh** (Fedora 44 / kernel 7.0.11: bash has a known SIGCHLD crash). All encoding runs in a single resumable Python process.
 
 ## Quick Start
 
