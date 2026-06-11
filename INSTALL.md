@@ -28,6 +28,14 @@ tsMuxeR --version
 sudo dnf install ffmpeg libbluray-utils
 ```
 
+## Optional: ISO output (`--iso`)
+
+| Tool | Where to get it | Check |
+|------|----------------|-------|
+| `xorriso` | `sudo dnf install xorriso` | `xorriso --version` |
+
+The script also falls back to `genisoimage` or `mkisofs` if xorriso isn't available.
+
 ## Verification
 
 Run the dry-run to confirm everything works:
