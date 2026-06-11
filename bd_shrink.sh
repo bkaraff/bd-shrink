@@ -43,7 +43,7 @@ bd_shrink.sh v${VERSION} — shrink BD50 → BD25 with menu preservation
 Usage:  bd_shrink.sh -s <source> -o <output> [options]
 
 Required:
-  -s, --source DIR       Source BDMV folder (must contain index.bdmv)
+  -s, --source DIR|FILE   Source BDMV folder (must contain index.bdmv) or .mkv file
   -o, --output DIR       Output directory (must not exist unless -f)
 
 Options:
@@ -116,9 +116,20 @@ fi
 
 [[ -z "$SOURCE" ]] && die "Source folder required (-s)"
 [[ -z "$OUTPUT" ]] && die "Output folder required (-o)"
-[[ ! -f "$SOURCE/index.bdmv" ]] && die "Source must contain index.bdmv (point to the BDMV folder)"
-[[ ! -d "$SOURCE/PLAYLIST" ]] && die "Source must contain PLAYLIST/ directory"
-[[ ! -d "$SOURCE/STREAM" ]] && die "Source must contain STREAM/ directory"
+
+MKV_INPUT=false
+if [[ -f "$SOURCE" ]] && [[ "$SOURCE" == *.mkv ]]; then
+    MKV_INPUT=true
+    MOVIE_ONLY=true
+elif [[ -f "$SOURCE" ]]; then
+    die "Source must be a BDMV folder (with index.bdmv) or a .mkv file"
+fi
+
+if ! $MKV_INPUT; then
+    [[ ! -f "$SOURCE/index.bdmv" ]] && die "Source must contain index.bdmv (point to the BDMV folder)"
+    [[ ! -d "$SOURCE/PLAYLIST" ]] && die "Source must contain PLAYLIST/ directory"
+    [[ ! -d "$SOURCE/STREAM" ]] && die "Source must contain STREAM/ directory"
+fi
 
 if [[ -d "$OUTPUT" ]] && ! $FORCE; then
     die "Output directory exists. Use -f to overwrite."
@@ -131,7 +142,7 @@ mkdir -p "$WORK_DIR"
 
 # Detect BD-J
 HAS_BDJ=false
-if [[ -d "$SOURCE/BDJO" || -d "$SOURCE/JAR" ]]; then
+if ! $MKV_INPUT && [[ -d "$SOURCE/BDJO" || -d "$SOURCE/JAR" ]]; then
     HAS_BDJ=true
     warn "BD-J (Java) menus detected. Menu preservation may fail on this disc."
     warn "Proceeding anyway, but test the output carefully in a software player first."
@@ -213,7 +224,29 @@ PYEOF
 }
 
 INVENTORY_FILE="$WORK_DIR/inventory.json"
-parse_mpls "$SOURCE/PLAYLIST" > "$WORK_DIR/playlists.json"
+
+if $MKV_INPUT; then
+    # MKV: create synthetic playlists.json with single clip "00000"
+    python3 -c "
+import json
+# Get MKV duration via ffprobe
+import subprocess
+r = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', '$SOURCE'], capture_output=True, text=True, timeout=30)
+dur = float(r.stdout.strip()) if r.stdout.strip() else 0
+data = {
+    '00000.mpls': {
+        'playitems': [{'clip': '00000', 'codec': 'H.264', 'in_time': 0, 'out_time': int(dur * 45000), 'duration': dur}],
+        'subpaths': 0,
+        'duration': dur,
+        'chapters': 1,
+        'chapter_times': [0],
+    }
+}
+print(json.dumps(data, indent=2))
+" > "$WORK_DIR/playlists.json"
+else
+    parse_mpls "$SOURCE/PLAYLIST" > "$WORK_DIR/playlists.json"
+fi
 
 # Probe all unique clips
 declare -A PROBED_CLIPS
@@ -241,7 +274,21 @@ if $FORCE; then PY_FORCE="True"; else PY_FORCE="False"; fi
 CLIPS_DIR="$WORK_DIR/clips"
 mkdir -p "$CLIPS_DIR"
 
-python3 - "$SOURCE" "$CLIPS_DIR" << 'PYEOF'
+if $MKV_INPUT; then
+    # MKV: ffprobe the source file directly as clip "00000"
+    python3 -c "
+import json, subprocess
+r = subprocess.run(['ffprobe', '-v', 'error',
+    '-show_entries', 'stream=index,codec_type,codec_name,width,height,duration,r_frame_rate,channels,channel_layout,sample_rate,bit_rate',
+    '-show_entries', 'format=size,duration,bit_rate',
+    '-of', 'json', '$SOURCE'],
+    capture_output=True, text=True, timeout=60)
+data = json.loads(r.stdout) if r.stdout else {'streams': [], 'format': {}}
+with open('$CLIPS_DIR/00000.json', 'w') as f:
+    json.dump(data, f)
+"
+else
+    python3 - "$SOURCE" "$CLIPS_DIR" << 'PYEOF'
 import json, os, subprocess, sys
 
 source = sys.argv[1]
@@ -272,6 +319,7 @@ for clip in sorted(all_clips):
     with open(out_path, 'w') as f:
         json.dump(data, f)
 PYEOF
+fi
 
 # Build combined inventory
 python3 << PYEOF > "$INVENTORY_FILE"
@@ -683,8 +731,10 @@ with open('$WORK_DIR/.clip_precompute.txt', 'w') as f:
     for cid, c in data.get('clips', {}).items():
         aud = len(c.get('audio', []))
         sub = len(c.get('subtitles', []))
-        h = c.get('video', [{}])[0].get('height', 1080) if c.get('video') else 1080
-        f.write(f'{cid}|{aud}|{sub}|{h}\n')
+        vs = c.get('video', [{}])[0] if c.get('video') else {}
+        h = vs.get('height', 1080) or 1080
+        w = vs.get('width', 1920) or 1920
+        f.write(f'{cid}|{aud}|{sub}|{h}|{w}\n')
 
 # --- Phase 4: budget values ---
 with open('$WORK_DIR/.budget_values.txt', 'w') as f:
@@ -741,6 +791,22 @@ with open('$WORK_DIR/.clip_fps.txt', 'w') as f:
             pass
         f.write(f'{cid}|{fps}\n')
 
+# --- Phase 5: main FPS (from first main clip) ---
+main_fps = '24000/1001'
+if main_clips:
+    first_cid = main_clips[0]
+    clip_json = os.path.join('$CLIPS_DIR', f'{first_cid}.json')
+    try:
+        d = json.load(open(clip_json))
+        for s in d.get('streams', []):
+            if s.get('codec_type') == 'video':
+                main_fps = s.get('r_frame_rate', '24000/1001')
+                break
+    except:
+        pass
+with open('$WORK_DIR/.main_fps.txt', 'w') as f:
+    f.write(f'{main_fps}\n')
+
 # --- Phase 5: all clip IDs (surgical mode needs the full list) ---
 with open('$WORK_DIR/.all_clips.txt', 'w') as f:
     for cid in sorted(data.get('clips', {}).keys()):
@@ -753,11 +819,12 @@ with open('$WORK_DIR/.main_counts.txt', 'w') as f:
 "
 
 # Read clip metadata into associative arrays (builtins only, no child processes)
-declare -A CLIP_AUD CLIP_SUB CLIP_HEIGHT
-while IFS='|' read -r cid aud sub h; do
+declare -A CLIP_AUD CLIP_SUB CLIP_HEIGHT CLIP_WIDTH
+while IFS='|' read -r cid aud sub h w; do
     CLIP_AUD[$cid]=$aud
     CLIP_SUB[$cid]=$sub
     CLIP_HEIGHT[$cid]=$h
+    CLIP_WIDTH[$cid]=$w
 done < "$WORK_DIR/.clip_precompute.txt"
 
 # Read budget values (builtins only)
@@ -816,6 +883,8 @@ python3 -u << PYEOF
 import json, os, subprocess, sys
 
 src_dir = '$SOURCE/STREAM'
+mkv_src = '$SOURCE'  # unused for BDMV input
+mkv_input = '$MKV_INPUT' == 'true'
 encode_dir = '$ENCODE_DIR'
 work_dir = '$WORK_DIR'
 clips_dir = '$CLIPS_DIR'
@@ -834,6 +903,36 @@ extras_clips_str = """$EXTRAS_CLIPS"""
 main_clips_str = """$MAIN_CLIPS"""
 no_extras = '$NO_EXTRAS' == 'true'
 movie_only = '$MOVIE_ONLY' == 'true'
+
+def clip_source(clip):
+    if mkv_input:
+        return mkv_src
+    return os.path.join(src_dir, '{}.m2ts'.format(clip))
+
+def get_sub_codecs(clip):
+    """Return list of subtitle codec names (e.g. 'hdmv_pgs', 'subrip') for a clip."""
+    cpath = os.path.join(clips_dir, '{}.json'.format(clip))
+    if not os.path.isfile(cpath):
+        return []
+    try:
+        d = json.load(open(cpath))
+        subs = []
+        for s in d.get('streams', []):
+            if s.get('codec_type') == 'subtitle':
+                subs.append(s.get('codec_name', '?'))
+        return subs
+    except:
+        return []
+
+def sub_ext(codec):
+    if codec in ('subrip', 'srt', 'text'):
+        return 'srt'
+    return 'sup'
+
+def sub_format(codec):
+    if codec in ('subrip', 'srt', 'text'):
+        return None  # no -f needed for SRT text
+    return 'sup'
 
 def run_ff(cmd, out_file=None, pass_log_base=None):
     """Run ffmpeg via subprocess. Returns True on success, False on failure."""
@@ -872,12 +971,12 @@ with open('{}/.clip_precompute.txt'.format(work_dir)) as f:
         line = line.strip()
         if not line: continue
         parts = line.split('|')
-        clip_data[parts[0]] = {'aud': int(parts[1]), 'sub': int(parts[2]), 'h': int(parts[3])}
+        clip_data[parts[0]] = {'aud': int(parts[1]), 'sub': int(parts[2]), 'h': int(parts[3]), 'w': int(parts[4])}
 
 # --- Encode extras ---
 if not no_extras and not movie_only:
     for i, clip in enumerate(extras_clips):
-        src = os.path.join(src_dir, '{}.m2ts'.format(clip))
+        src = clip_source(clip)
         out_video = os.path.join(encode_dir, '{}_video.h264'.format(clip))
         cd = clip_data.get(clip, {'aud':0, 'sub':0, 'h':1080})
         src_aud, src_sub, src_height = cd['aud'], cd['sub'], cd['h']
@@ -903,12 +1002,24 @@ if not no_extras and not movie_only:
         # Subtitle extraction
         sub_tracks = 0
         if src_sub > 0:
-            sub_args = ['ffmpeg', '-y', '-v', 'error', '-i', src]
+            sub_codecs = get_sub_codecs(clip)
+            sb_args = ['ffmpeg', '-y', '-v', 'error', '-i', src]
+            actual_sub_idx = 0
             for si in range(src_sub):
-                sub_args += ['-map', '0:s:{}'.format(si), '-c', 'copy', '-f', 'sup',
-                             os.path.join(encode_dir, '{}_sub_{}.sup'.format(clip, si))]
-            if run_ff(sub_args):
-                sub_tracks = src_sub
+                codec = sub_codecs[si] if si < len(sub_codecs) else 'hdmv_pgs'
+                # Skip non-BD-compatible subtitle codecs (DVD/VobSub, etc.)
+                if codec in ('dvd_subtitle', 'dvdsub', 'dvd_sub', 'dvd'):
+                    continue
+                ext = sub_ext(codec)
+                fmt = sub_format(codec)
+                sb_args += ['-map', '0:s:{}'.format(si), '-c', 'copy']
+                if fmt:
+                    sb_args += ['-f', fmt]
+                sb_args += [os.path.join(encode_dir, '{}_sub_{}.{}'.format(clip, actual_sub_idx, ext))]
+                actual_sub_idx += 1
+            if len(sb_args) > 6:  # have subtitle mappings beyond initial ['ffmpeg', '-y', '-v', 'error', '-i', src]
+                if run_ff(sb_args):
+                    sub_tracks = actual_sub_idx
 
         if audio_tracks == 0:
             # Copy original clip
@@ -938,7 +1049,7 @@ if not no_extras and not movie_only:
 # --- Encode main movie ---
 if main_clips:
     for clip in main_clips:
-        src = os.path.join(src_dir, '{}.m2ts'.format(clip))
+        src = clip_source(clip)
         out_video = os.path.join(encode_dir, '{}_video.h264'.format(clip))
         pass_log = os.path.join(work_dir, 'x264_{}.log'.format(clip))
         cd = clip_data.get(clip, {'aud':0, 'sub':0, 'h':1080})
@@ -962,12 +1073,24 @@ if main_clips:
         # Subtitle extraction
         sub_tracks = 0
         if src_sub > 0:
-            sub_args = ['ffmpeg', '-y', '-v', 'error', '-i', src]
+            sub_codecs = get_sub_codecs(clip)
+            sb_args = ['ffmpeg', '-y', '-v', 'error', '-i', src]
+            actual_sub_idx = 0
             for si in range(src_sub):
-                sub_args += ['-map', '0:s:{}'.format(si), '-c', 'copy', '-f', 'sup',
-                             os.path.join(encode_dir, '{}_sub_{}.sup'.format(clip, si))]
-            if run_ff(sub_args):
-                sub_tracks = src_sub
+                codec = sub_codecs[si] if si < len(sub_codecs) else 'hdmv_pgs'
+                # Skip non-BD-compatible subtitle codecs (DVD/VobSub, etc.)
+                if codec in ('dvd_subtitle', 'dvdsub', 'dvd_sub', 'dvd'):
+                    continue
+                ext = sub_ext(codec)
+                fmt = sub_format(codec)
+                sb_args += ['-map', '0:s:{}'.format(si), '-c', 'copy']
+                if fmt:
+                    sb_args += ['-f', fmt]
+                sb_args += [os.path.join(encode_dir, '{}_sub_{}.{}'.format(clip, actual_sub_idx, ext))]
+                actual_sub_idx += 1
+            if len(sb_args) > 6:  # have subtitle mappings
+                if run_ff(sb_args):
+                    sub_tracks = actual_sub_idx
 
         if audio_tracks == 0:
             sys.stderr.write('  (video-only)\n')
@@ -1068,7 +1191,8 @@ if $MOVIE_ONLY; then
     for clip in $MAIN_CLIPS; do
         a=0; while [[ -f "$ENCODE_DIR/${clip}_audio_${a}.ac3" ]]; do ((++a)); done
         ((a > max_audio)) && max_audio=$a
-        s=0; while [[ -f "$ENCODE_DIR/${clip}_sub_${s}.sup" ]]; do ((++s)); done
+        s=0
+        while [[ -f "$ENCODE_DIR/${clip}_sub_${s}.sup" || -f "$ENCODE_DIR/${clip}_sub_${s}.srt" ]]; do ((++s)); done
         ((s > max_subs)) && max_subs=$s
     done
 
@@ -1104,12 +1228,27 @@ if $MOVIE_ONLY; then
     for ((sidx = 0; sidx < max_subs; sidx++)); do
         first=true
         for clip in $MAIN_CLIPS; do
-            sf="$ENCODE_DIR/${clip}_sub_${sidx}.sup"
-            [[ -f "$sf" ]] || continue
-            if $first; then
-                echo "S_HDMV/PGS, \"$sf\"" >> "$META_FILE"
+            sf_sup="$ENCODE_DIR/${clip}_sub_${sidx}.sup"
+            sf_srt="$ENCODE_DIR/${clip}_sub_${sidx}.srt"
+            if [[ -f "$sf_sup" ]]; then
+                sf="$sf_sup"; scodec="S_HDMV/PGS"
+            elif [[ -f "$sf_srt" ]]; then
+                sf="$sf_srt"; scodec="S_TEXT/UTF8"
             else
-                echo "+S_HDMV/PGS, \"$sf\"" >> "$META_FILE"
+                continue
+            fi
+            if $first; then
+                if [[ "$scodec" == "S_TEXT/UTF8" ]]; then
+                    echo "${scodec}, \"$sf\", fps=$fps, video-width=${CLIP_WIDTH[$clip]:-1920}, video-height=${CLIP_HEIGHT[$clip]:-1080}" >> "$META_FILE"
+                else
+                    echo "${scodec}, \"$sf\"" >> "$META_FILE"
+                fi
+            else
+                if [[ "$scodec" == "S_TEXT/UTF8" ]]; then
+                    echo "+${scodec}, \"$sf\", fps=$fps, video-width=${CLIP_WIDTH[$clip]:-1920}, video-height=${CLIP_HEIGHT[$clip]:-1080}" >> "$META_FILE"
+                else
+                    echo "+${scodec}, \"$sf\"" >> "$META_FILE"
+                fi
             fi
             first=false
         done
@@ -1120,9 +1259,11 @@ if $MOVIE_ONLY; then
     while read -r meta_line; do log "    $meta_line"; done < "$META_FILE"
 
     log "  Running tsMuxeR..."
-    tsMuxeR "$META_FILE" "$DST" > /dev/null 2>&1 || {
+    tsMuxeR "$META_FILE" "$DST" > "$WORK_DIR/.tsmuxer_out.txt" 2>&1 || {
+        while IFS= read -r tline; do log "    tsMuxeR: $tline"; done < "$WORK_DIR/.tsmuxer_out.txt"
         die "tsMuxeR authoring failed"
     }
+    while IFS= read -r tline; do log "    tsMuxeR: $tline"; done < "$WORK_DIR/.tsmuxer_out.txt"
     log "  BDMV folder created: $DST"
 
     log "  Fresh BD structure complete"
