@@ -726,25 +726,29 @@ for t in ct:
 with open('$WORK_DIR/.main_chapters.txt', 'w') as f:
     f.write(';'.join(chapters) + '\n')
 
-# --- Phase 5: FPS of first clip ---
-fps = '24000/1001'
-if main_clips:
-    clip_json = os.path.join('$CLIPS_DIR', f'{main_clips[0]}.json')
-    try:
-        d = json.load(open(clip_json))
-        for s in d.get('streams', []):
-            if s.get('codec_type') == 'video':
-                fps = s.get('r_frame_rate', '24000/1001')
-                break
-    except:
-        pass
-with open('$WORK_DIR/.main_fps.txt', 'w') as f:
-    f.write(f'{fps}\n')
+# --- Phase 5: FPS of all clips (surgical mode needs per-clip FPS) ---
+with open('$WORK_DIR/.clip_fps.txt', 'w') as f:
+    for cid in data.get('clips', {}):
+        fps = '24000/1001'
+        clip_json = os.path.join('$CLIPS_DIR', f'{cid}.json')
+        try:
+            d = json.load(open(clip_json))
+            for s in d.get('streams', []):
+                if s.get('codec_type') == 'video':
+                    fps = s.get('r_frame_rate', '24000/1001')
+                    break
+        except:
+            pass
+        f.write(f'{cid}|{fps}\n')
 
-# --- Phase 5: clip count, max audio, max subtitle ---
+# --- Phase 5: all clip IDs (surgical mode needs the full list) ---
+with open('$WORK_DIR/.all_clips.txt', 'w') as f:
+    for cid in sorted(data.get('clips', {}).keys()):
+        f.write(f'{cid}\n')
+
+# --- Phase 5: main clip count, max audio, max subtitle ---
 with open('$WORK_DIR/.main_counts.txt', 'w') as f:
     f.write(f'{len(main_clips)}\n')
-    # We cannot know audio/sub counts until after extraction, but we can store the clip IDs
     f.write('0\n0\n')  # placeholder, recalculated in Phase 5 after encoding
 "
 
@@ -776,6 +780,17 @@ MAIN_CLIPS=""
 while read -r cid; do
     MAIN_CLIPS+="$cid"$'\n'
 done < "$WORK_DIR/.main_clips.txt"
+
+# Read FPS for all clips + all-clip-ID list (builtins only)
+declare -A CLIP_FPS
+while IFS='|' read -r cid fps; do
+    CLIP_FPS[$cid]="$fps"
+done < "$WORK_DIR/.clip_fps.txt"
+
+ALL_CLIP_IDS=""
+while read -r cid; do
+    ALL_CLIP_IDS+="$cid"$'\n'
+done < "$WORK_DIR/.all_clips.txt"
 
 # Common x264 BD-compat opts
 BD_X264_OPTS="bluray-compat=1:vbv-maxrate=40000:vbv-bufsize=30000"
@@ -1055,152 +1070,111 @@ else
     # Surgical replacement mode: preserve original menus, files, structure
     # ────────────────────────────────────────────────────────────────────
 
-rm -rf "$DST" 2>/dev/null || true
-mkdir -p "$DST/BDMV/PLAYLIST" "$DST/BDMV/CLIPINF" "$DST/BDMV/STREAM"
-mkdir -p "$DST/BDMV/BACKUP/PLAYLIST" "$DST/BDMV/BACKUP/CLIPINF"
-mkdir -p "$DST/CERTIFICATE"
+    REBUILD_DIR="$WORK_DIR/rebuild"
+    mkdir -p "$REBUILD_DIR"
 
-# Copy CERTIFICATE if it exists
-if [[ -d "$SOURCE/../CERTIFICATE" ]]; then
-    cp -r "$SOURCE/../CERTIFICATE/"* "$DST/CERTIFICATE/" 2>/dev/null || true
-elif [[ -d "$SOURCE/CERTIFICATE" ]]; then
-    cp -r "$SOURCE/CERTIFICATE/"* "$DST/CERTIFICATE/" 2>/dev/null || true
-fi
+    # Build fresh BD structure (don't rm -rf "$DST" — that deletes run.log!)
+    mkdir -p "$DST/BDMV/PLAYLIST" "$DST/BDMV/CLIPINF" "$DST/BDMV/STREAM"
+    mkdir -p "$DST/BDMV/BACKUP/PLAYLIST" "$DST/BDMV/BACKUP/CLIPINF"
+    mkdir -p "$DST/CERTIFICATE"
 
-# Copy index.bdmv and MovieObject.bdmv
-cp "$SOURCE/index.bdmv" "$DST/BDMV/"
-cp "$SOURCE/MovieObject.bdmv" "$DST/BDMV/"
+    # Copy source BD metadata
+    cp "$SOURCE/index.bdmv" "$DST/BDMV/"
+    cp "$SOURCE/MovieObject.bdmv" "$DST/BDMV/"
+    [[ -d "$SOURCE/../CERTIFICATE" ]] && cp -r "$SOURCE/../CERTIFICATE/"* "$DST/CERTIFICATE/" 2>/dev/null || true
+    [[ -d "$SOURCE/CERTIFICATE" ]] && cp -r "$SOURCE/CERTIFICATE/"* "$DST/CERTIFICATE/" 2>/dev/null || true
 
-# Determine which clips were re-encoded
-REBUILD_DIR="$WORK_DIR/rebuild"
-mkdir -p "$REBUILD_DIR"
-
-# Function: remux a re-encoded clip with tsMuxeR
-remux_clip() {
-    local clip_id="$1"
-    local video_file="$ENCODE_DIR/${clip_id}_video.h264"
-    local temp_meta="$REBUILD_DIR/${clip_id}.meta"
-    local temp_output="$REBUILD_DIR/${clip_id}_output"
-
-    if [[ ! -f "$video_file" ]]; then
-        return 1
-    fi
-
-    # Determine FPS from original probe
-    local fps="24000/1001"
-    local src_json="$CLIPS_DIR/${clip_id}.json"
-    if [[ -f "$src_json" ]]; then
-        fps=$(python3 -c "
-import json
-with open('$src_json') as f:
-    d = json.load(f)
-for s in d.get('streams', []):
-    if s.get('codec_type') == 'video':
-        print(s.get('r_frame_rate', '24000/1001'))
-        break
-" 2>/dev/null || echo "24000/1001")
-    fi
-
-    # Build META with video + all audio + all subtitle tracks
-    cat > "$temp_meta" << METAEOF
-MUXOPT --no-pcr-on-video-pid --new-audio-pes --vbr --blu-ray
-V_MPEG4/ISO/AVC, "$video_file", fps=$fps, insertSEI, contSPS
-METAEOF
-
-    local a=0
-    while [[ -f "$ENCODE_DIR/${clip_id}_audio_${a}.ac3" ]]; do
-        echo "A_AC3, \"$ENCODE_DIR/${clip_id}_audio_${a}.ac3\"" >> "$temp_meta"
-        ((a++))
+    # Discover which clips were re-encoded (builtins only)
+    ENCODED_CLIP_IDS=""
+    encode_dir="$WORK_DIR/encode"
+    for f in "$encode_dir/"*_video.h264; do
+        [[ -f "$f" ]] || continue
+        fname="${f##*/}"
+        cid="${fname%_video.h264}"
+        ENCODED_CLIP_IDS+="$cid "
     done
 
-    local s=0
-    while [[ -f "$ENCODE_DIR/${clip_id}_sub_${s}.sup" ]]; do
-        echo "S_HDMV/PGS, \"$ENCODE_DIR/${clip_id}_sub_${s}.sup\"" >> "$temp_meta"
-        ((s++))
-    done
+    encoded_count=0
+    log "Re-encoded clips:"
+    for cid in $ENCODED_CLIP_IDS; do
+        [[ -n "$cid" ]] || continue
+        [[ -f "$encode_dir/${cid}_video.h264" ]] || continue
+        ((++encoded_count))
+        fps=${CLIP_FPS[$cid]:-24000/1001}
 
-    mkdir -p "$temp_output"
-    tsMuxeR "$temp_meta" "$temp_output" > /dev/null 2>&1 || {
-        warn "tsMuxeR failed for clip ${clip_id}"
-        return 1
-    }
+        # Count audio / subtitle tracks in encoded output
+        a=0; while [[ -f "$encode_dir/${cid}_audio_${a}.ac3" ]]; do ((++a)); done
+        s=0; while [[ -f "$encode_dir/${cid}_sub_${s}.sup" ]]; do ((++s)); done
 
-    # Copy resulting M2TS and CLPI to output
-    local new_m2ts=$(ls "$temp_output/BDMV/STREAM/"*.m2ts 2>/dev/null | head -1)
-    local new_clpi=$(ls "$temp_output/BDMV/CLIPINF/"*.clpi 2>/dev/null | head -1)
+        # Build tsMuxeR meta file (builtins only)
+        meta="$REBUILD_DIR/${cid}.meta"
+        tmpout="$REBUILD_DIR/${cid}_output"
+        {
+            echo "MUXOPT --no-pcr-on-video-pid --new-audio-pes --vbr --blu-ray"
+            echo "V_MPEG4/ISO/AVC, \"$encode_dir/${cid}_video.h264\", fps=$fps, insertSEI, contSPS"
+            aidx=0
+            while [[ -f "$encode_dir/${cid}_audio_${aidx}.ac3" ]]; do
+                echo "A_AC3, \"$encode_dir/${cid}_audio_${aidx}.ac3\""
+                ((++aidx))
+            done
+            sidx=0
+            while [[ -f "$encode_dir/${cid}_sub_${sidx}.sup" ]]; do
+                echo "S_HDMV/PGS, \"$encode_dir/${cid}_sub_${sidx}.sup\""
+                ((++sidx))
+            done
+        } > "$meta"
 
-    if [[ -f "$new_m2ts" ]] && [[ -f "$new_clpi" ]]; then
-        cp "$new_m2ts" "$DST/BDMV/STREAM/${clip_id}.m2ts"
-        cp "$new_clpi" "$DST/BDMV/CLIPINF/${clip_id}.clpi"
-        log "    remuxed: ${clip_id}.m2ts (${a} audio, ${s} subtitle)"
-        return 0
-    fi
-    return 1
-}
+        log "  Remuxing: ${cid}.m2ts ($a audio, $s subtitle)"
+        mkdir -p "$tmpout" 2>/dev/null || true
+        tsMuxeR "$meta" "$tmpout" > /dev/null 2>&1 || {
+            warn "tsMuxeR failed for clip ${cid}"
+            continue
+        }
 
-# Get all clip IDs from the inventory
-ALL_CLIP_IDS=$(python3 -c "
-import json
-inv = json.load(open('$INVENTORY_FILE'))
-for cid in sorted(inv['clips'].keys()):
-    print(cid)
-")
-
-# Get encoded clip IDs
-ENCODED_CLIP_IDS=""
-for f in "$ENCODE_DIR/"*_video.h264; do
-    [[ -f "$f" ]] || continue
-    cid=$(basename "$f" | sed 's/_video.h264//')
-    ENCODED_CLIP_IDS="$ENCODED_CLIP_IDS $cid"
-done
-
-log "Clips re-encoded: $(echo "$ENCODED_CLIP_IDS" | wc -w)"
-log "Clips copied verbatim: $(python3 -c "
-import json
-inv = json.load(open('$INVENTORY_FILE'))
-encoded = set('$ENCODED_CLIP_IDS'.split())
-verbatim = [c for c in inv['clips'] if c not in encoded]
-print(len(verbatim))
-")"
-
-# Remux encoded clips
-for cid in $ENCODED_CLIP_IDS; do
-    log "  Remuxing: ${cid}.m2ts"
-    remux_clip "$cid" || warn "Remux failed for ${cid}, will try fallback"
-done
-
-# Copy un-encoded clips verbatim
-for cid in $ALL_CLIP_IDS; do
-    if [[ -f "$DST/BDMV/STREAM/${cid}.m2ts" ]]; then
-        continue
-    fi
-    if echo "$ENCODED_CLIP_IDS" | grep -qw "$cid"; then
-        if [[ ! -f "$DST/BDMV/STREAM/${cid}.m2ts" ]]; then
-            warn "Falling back to original for ${cid}.m2ts"
-            cp "$SOURCE/STREAM/${cid}.m2ts" "$DST/BDMV/STREAM/${cid}.m2ts" 2>/dev/null || true
-            cp "$SOURCE/CLIPINF/${cid}.clpi" "$DST/BDMV/CLIPINF/${cid}.clpi" 2>/dev/null || warn "Missing CLIPINF for ${cid}.clpi in source"
+        # Copy remuxed output to destination (use zsh glob, no ls/head)
+        local new_m2ts=("$tmpout/BDMV/STREAM/"*.m2ts(N))
+        local new_clpi=("$tmpout/BDMV/CLIPINF/"*.clpi(N))
+        if [[ -n "${new_m2ts[1]:-}" ]] && [[ -n "${new_clpi[1]:-}" ]]; then
+            cp "$new_m2ts" "$DST/BDMV/STREAM/${cid}.m2ts"
+            cp "$new_clpi" "$DST/BDMV/CLIPINF/${cid}.clpi"
+            log "    done: ${cid}.m2ts"
+        else
+            warn "tsMuxeR produced no output for ${cid}"
         fi
-        continue
-    fi
-cp "$SOURCE/STREAM/${cid}.m2ts" "$DST/BDMV/STREAM/${cid}.m2ts" 2>/dev/null || true
-cp "$SOURCE/CLIPINF/${cid}.clpi" "$DST/BDMV/CLIPINF/${cid}.clpi" 2>/dev/null || warn "Missing CLIPINF for ${cid}.clpi"
-done
+    done
 
-# Copy all MPLS files
-cp "$SOURCE/PLAYLIST/"*.mpls "$DST/BDMV/PLAYLIST/" 2>/dev/null || true
+    # Copy un-encoded clips verbatim (builtins only)
+    log "Copying un-encoded clips..."
+    for cid in $ALL_CLIP_IDS; do
+        [[ -n "$cid" ]] || continue
+        [[ -f "$DST/BDMV/STREAM/${cid}.m2ts" ]] && continue
+        # Check if this clip was encoded (remux already placed it)
+        local was_encoded=false
+        for ecid in $ENCODED_CLIP_IDS; do
+            [[ "$ecid" == "$cid" ]] && was_encoded=true && break
+        done
+        if $was_encoded; then
+            # Fallback: copy original
+            [[ -f "$DST/BDMV/STREAM/${cid}.m2ts" ]] && continue
+            warn "  Falling back to original for ${cid}.m2ts"
+        fi
+        cp "$SOURCE/STREAM/${cid}.m2ts" "$DST/BDMV/STREAM/${cid}.m2ts" 2>/dev/null || true
+        cp "$SOURCE/CLIPINF/${cid}.clpi" "$DST/BDMV/CLIPINF/${cid}.clpi" 2>/dev/null || true
+    done
 
-# Copy any extra metadata directories
-for dir in AUXDATA META BDJO JAR; do
-    if [[ -d "$SOURCE/$dir" ]]; then
-        cp -r "$SOURCE/$dir" "$DST/BDMV/" 2>/dev/null || true
-    fi
-done
+    # Copy all MPLS files
+    cp "$SOURCE/PLAYLIST/"*.mpls "$DST/BDMV/PLAYLIST/" 2>/dev/null || true
 
-# Copy BACKUP
-cp "$SOURCE/index.bdmv" "$DST/BDMV/BACKUP/"
-cp "$SOURCE/MovieObject.bdmv" "$DST/BDMV/BACKUP/"
-cp "$SOURCE/BACKUP/PLAYLIST/"*.mpls "$DST/BDMV/BACKUP/PLAYLIST/" 2>/dev/null || true
-cp "$DST/BDMV/CLIPINF/"*.clpi "$DST/BDMV/BACKUP/CLIPINF/" 2>/dev/null || true
+    # Copy extra metadata directories
+    for dir in AUXDATA META BDJO JAR; do
+        [[ -d "$SOURCE/$dir" ]] && cp -r "$SOURCE/$dir" "$DST/BDMV/" 2>/dev/null || true
+    done
+
+    # Copy BACKUP
+    cp "$SOURCE/index.bdmv" "$DST/BDMV/BACKUP/"
+    cp "$SOURCE/MovieObject.bdmv" "$DST/BDMV/BACKUP/"
+    cp "$SOURCE/BACKUP/PLAYLIST/"*.mpls "$DST/BDMV/BACKUP/PLAYLIST/" 2>/dev/null || true
+    cp "$DST/BDMV/CLIPINF/"*.clpi "$DST/BDMV/BACKUP/CLIPINF/" 2>/dev/null || true
 
 fi  # end if MOVIE_ONLY
 
@@ -1208,68 +1182,35 @@ fi  # end if MOVIE_ONLY
 
 log "Phase 6: Validating output..."
 
-# Check total size
-OUTPUT_SIZE=$(du -sb "$DST" 2>/dev/null | cut -f1)
-if [[ -z "${OUTPUT_SIZE:-}" ]]; then
-    warn "Could not determine output size — is the output path valid?"
-else
-    OUTPUT_GB=$(python3 -c "print(round(${OUTPUT_SIZE} / 1073741824, 2))")
-    log "Output size: ${OUTPUT_GB} GB"
+# Check output exists
+[[ ! -e "$DST" ]] && die "Output does not exist: $DST"
 
-    # Compare sizes using Python (handles both int and float targets)
-    exceeds=$(python3 -c "
-target = $TARGET_GB * 1073741824
-actual = $OUTPUT_SIZE
-print('yes' if actual > target else 'no')")
-    if [[ "$exceeds" == "yes" ]]; then
-        warn "Output (${OUTPUT_GB} GB) exceeds target ($TARGET_GB GB)!"
-    fi
-fi
-
-if [[ ! -e "$DST" ]]; then
-    die "Output does not exist: $DST"
-fi
-
-# For folder-based output (not ISO), verify BD structure
 if [[ -d "$DST" ]] && [[ -d "$DST/BDMV" ]]; then
     log "Verifying BDMV structure..."
 
-    # Verify all MPLS clips exist (surgical mode only — checks original playlists)
-    if ! $MOVIE_ONLY; then
-        MISSING_CLIPS=0
-        for mpls in "$DST/BDMV/PLAYLIST/"*.mpls; do
-            python3 -c "
-import json, sys, os
-result = json.load(open('$WORK_DIR/playlists.json'))
-pl_name = os.path.basename('$mpls')
-if pl_name in result:
-    for item in result[pl_name]['playitems']:
-        expected = os.path.join('$DST/BDMV/STREAM', item['clip'] + '.m2ts')
-        if not os.path.exists(expected):
-            print(f'MISSING: {item[\"clip\"]}.m2ts referenced by {pl_name}')
-            sys.exit(1)
-" 2>/dev/null || MISSING_CLIPS=1
-        done
-
-        if [[ $MISSING_CLIPS -eq 1 ]]; then
-            warn "Some MPLS references point to missing M2TS files!"
-        else
-            log "All playlist references verified."
-        fi
-    fi
-
-    # Verify CLPI files exist for all M2TS
+    # Count and verify files (builtins only)
+    m2ts_count=0
+    missing_clpi=0
     for m2ts in "$DST/BDMV/STREAM/"*.m2ts; do
-        cid=$(basename "$m2ts" .m2ts)
+        [[ -f "$m2ts" ]] || continue
+        ((++m2ts_count))
+        fname="${m2ts##*/}"
+        cid="${fname%.m2ts}"
         if [[ ! -f "$DST/BDMV/CLIPINF/${cid}.clpi" ]]; then
             warn "Missing CLPI for ${cid}.m2ts"
+            ((++missing_clpi))
         fi
     done
+
+    if [[ $m2ts_count -eq 0 ]]; then
+        warn "No M2TS files found in STREAM/"
+    else
+        log "STREAM: $m2ts_count file(s) — ${missing_clpi} missing CLPI"
+    fi
 fi
 
 # ─── Done ─────────────────────────────────────────────────────────────────────
 log "Done! Output: $DST"
-log "Size: ${OUTPUT_GB:-?} GB / ${TARGET_GB} GB target"
 if $HAS_BDJ && ! $MOVIE_ONLY; then
     warn "BD-J disc — test in a software player (VLC/mpv) before burning."
 elif $MOVIE_ONLY; then
