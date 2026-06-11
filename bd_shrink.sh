@@ -1244,32 +1244,21 @@ if $OUTPUT_ISO; then
     ISO_OUT="${OUTPUT%.iso}.iso"
     log "Creating ISO: ${ISO_OUT}..."
 
-    creator=""
-    command -v genisoimage &>/dev/null && creator="genisoimage"
-    [[ -z "$creator" ]] && command -v mkisofs &>/dev/null && creator="mkisofs"
-    [[ -z "$creator" ]] && command -v xorriso &>/dev/null && creator="xorriso"
-
-    if [[ -z "$creator" ]]; then
-        warn "No ISO creation tool found (genisoimage/mkisofs/xorriso). Install one and run:"
-        warn "  mkisofs -udf -V 'BD_SHRINK' -o ${ISO_OUT} ${DST}"
+    if command -v xorriso &>/dev/null; then
+        xorriso -outdev "$ISO_OUT" -volid "BD_SHRINK" -map "$DST" / -commit 2>/dev/null || {
+            warn "ISO creation failed with xorriso"
+        }
+    elif command -v genisoimage &>/dev/null; then
+        genisoimage -udf -V "BD_SHRINK" -o "$ISO_OUT" "$DST" 2>/dev/null || {
+            warn "ISO creation failed with genisoimage"
+        }
+    elif command -v mkisofs &>/dev/null; then
+        mkisofs -udf -V "BD_SHRINK" -o "$ISO_OUT" "$DST" 2>/dev/null || {
+            warn "ISO creation failed with mkisofs"
+        }
     else
-        case "$creator" in
-            genisoimage|mkisofs)
-                $creator -udf -V "BD_SHRINK" -o "$ISO_OUT" "$DST" 2>/dev/null || {
-                    warn "ISO creation failed with $creator"
-                }
-                ;;
-            xorriso)
-                xorriso -as mkisofs -udf -V "BD_SHRINK" -o "$ISO_OUT" "$DST" 2>/dev/null || {
-                    warn "ISO creation failed with xorriso"
-                }
-                ;;
-        esac
-        if [[ -f "$ISO_OUT" ]] && [[ -s "$ISO_OUT" ]]; then
-            log "ISO created: $ISO_OUT ($(du -sh "$ISO_OUT" 2>/dev/null | cut -f1))"
-        else
-            warn "ISO creation failed — BDMV folder remains at $DST"
-        fi
+        warn "No ISO creation tool found (xorriso/genisoimage/mkisofs). Install one and run:"
+        warn "  xorriso -outdev ${ISO_OUT} -volid 'BD_SHRINK' -map ${DST} / -commit"
     fi
 fi
 
