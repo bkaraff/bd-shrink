@@ -2,7 +2,7 @@
 
 ## Project overview
 
-Single-file **zsh** script (~1370 lines) that shrinks BD50 Blu-ray backups or MKV files to BD25-compatible BDMV folders. The `-s` flag accepts BDMV folders or **.mkv files** (MKV forces movie-only mode). Built-in Python heredocs handle MPLS binary parsing, MKV demuxing, and data processing. Output is authored with `tsMuxeR`.
+Single-file **zsh** script (1470 lines) that shrinks BD50 Blu-ray backups or MKV files to BD25-compatible BDMV folders. The `-s` flag accepts BDMV folders or **.mkv files** (MKV forces movie-only mode). Built-in Python heredocs handle MPLS binary parsing, MKV demuxing, and data processing. Output is authored with `tsMuxeR`.
 
 ## Key commands
 
@@ -19,7 +19,7 @@ zsh -n bd_shrink.sh
 # MKV input (forces movie-only mode)
 ./bd_shrink.sh -s movie.mkv -o /output -f
 
-# Dry-run
+# Dry-run (needs -f if output dir already exists)
 ./bd_shrink.sh -s /path/to/BDMV -o /tmp/test -n -f
 ```
 
@@ -34,19 +34,25 @@ cd ~/projects/bd-shrink && git add ... && git commit -m "..." && git push
 
 ## Architecture
 
-Single file `bd_shrink.sh` (~1370 lines). Shebang: `#!/usr/bin/env zsh`. No separate library files.
+Single file `bd_shrink.sh` (1470 lines). Shebang: `#!/usr/bin/env zsh`. No separate library files.
 
 **Phases:**
 1. **Inventory** — parse `.mpls` (Python heredoc, binary struct), probe `.m2ts` (single Python subprocess); for MKV, demux streams via ffprobe
 2. **Classify** — longest playlist(s) = main movie, rest = extras or menus; MKV is always a single movie
 3. **Budget** — calculate remaining space and target bitrate for main movie
-4. **Encode** — **single Python heredoc** handles ALL extras + main movie encoding via `subprocess.run()`. See below.
-5. **Rebuild** — surgical (keep original menus) or fresh `tsMuxeR` authoring (`--movie-only`)
-6. **Validate** — file count, CLPI verification (builtins only) then print `.work` retention message
+4. **Pre-compute** — single `systemd-run` wrapping a Python script that writes clip metadata (`.clip_precompute.txt`, `.budget_values.txt`, `.clip_fps.txt`, `.all_clips.txt`, `.main_playlist.txt`, `.main_fps.txt`, etc.)
+5. **Encode** — single bare `python3 -u << PYEOF` heredoc handles ALL extras + main movie encoding via `subprocess.run()`. NOT wrapped in systemd-run. See below.
+6. **Rebuild** — surgical (keep original menus) or fresh `tsMuxeR` authoring (`--movie-only`). Uses shell `run_ff` function (systemd-run wrapper) for each `cp`/`tsMuxeR` call.
+7. **Validate** — file count, CLPI verification (builtins only) then print `.work` retention message
 
 **Two output modes:**
 - Default (surgical): keeps `index.bdmv`, `MovieObject.bdmv`, all `.mpls`, copies/remuxes M2TS. IGS menus only.
 - `--movie-only`: fresh `tsMuxeR` authoring. No menus. Works on any disc including BD-J.
+
+**Flag interactions:**
+- `--movie-only` implies `--keep-one` (only first main playlist encoded)
+- `--no-extras` skips extras encoding but keeps menus (surgical mode); distinct from `--movie-only` which discards menus entirely
+- `-f` is checked **before** the dry-run exit — you need `-f` even with `-n` if the output directory already exists
 
 ### Subtitle handling
 
@@ -54,31 +60,27 @@ Single file `bd_shrink.sh` (~1370 lines). Shebang: `#!/usr/bin/env zsh`. No sepa
 - **PGS** subtitles (`.sup` files) pass through correctly as `S_HDMV/PGS`.
 - **DVD/VobSub** subtitles (`dvd_subtitle` codec) are filtered out entirely — not BD-compatible.
 
-## Phase 4: single Python heredoc
+## The two `run_ff` functions
 
-All encoding (extras audio/sub/video + main movie audio/sub/pass1/pass2) runs in ONE `python3 -u << PYEOF` call. This avoids the kernel SIGCHLD race because the shell has only one child (python3) during encoding.
+There are **two separate** `run_ff` definitions — a shell function and a Python function — serving different phases:
 
-The Python code:
-- Reads pre-computed clip metadata from `$WORK_DIR/.clip_precompute.txt`
-- Uses `subprocess.run()` for all ffmpeg calls
-- **Resumable**: skips files that already exist (`run_ff()` checks `out_file` before encoding)
-- Writes progress to `sys.stderr` (goes to run.log)
-- Writes `.main_fps.txt` during pre-compute (bug fix: was read but never written)
+**Shell function** (line 35): wraps each command in `systemd-run --user --wait`, making it a transient systemd service rather than a direct child of the shell. Used in Phase 6 (rebuild) for `cp`, `tsMuxeR`, etc. This avoids SIGCHLD because the exiting process is systemd's child, not the shell's.
 
-## Phase 5: zero child processes
+**Python function** (inside the encoding heredoc): uses `subprocess.run()` for all ffmpeg calls. Checks `out_file` existence before encoding — **resumable** across crashes.
 
-Both movie-only and surgical rebuild modes use only shell builtins:
-- All data pre-computed in Phase 4's single `systemd-run` call (`.clip_fps.txt`, `.all_clips.txt`, `.main_playlist.txt`, `.main_fps.txt`, etc.)
-- File operations: zsh parameter expansion (`${fname##*/}`, `${fname%_video.h264}`) instead of `basename`/`sed`
-- File lists: zsh glob qualifiers `(N)` instead of `ls | head`
-- Loop counters: `for ((i = 0; i < n; i++))` instead of `{0..$((n-1))}` (zsh `{1..0}` expands to `1 0`)
-- Array lookups: `CLIP_FPS[$cid]` instead of per-clip `$(python3)` calls
+## SIGCHLD mitigation strategy
 
-## Phase 6: builtins only
+zsh 5.9 crashes non-deterministically when ANY child process exits. The script minimizes direct shell children:
 
-Validates output using only shell builtins:
-- File counting: `for m2ts in ...; do ((++count)); done`
-- CLPI check: parameter expansion + `[[ -f ]]`
+| Phase | Strategy | Shell children |
+|-------|----------|----------------|
+| Inventory | Single Python subprocess | 1 |
+| Pre-compute | `systemd-run` wrapping Python | 1 (systemd-run exits quickly) |
+| Encode | Single bare `python3` heredoc | 1 |
+| Rebuild | `systemd-run` per command (shell `run_ff`) | 0 direct (systemd manages) |
+| Validate | Builtins only | 0 |
+
+When the shell crashes mid-encode, restarting the script resumes from where it left off (Python `run_ff` skips existing output files).
 
 ## zsh-specific options
 
@@ -107,22 +109,6 @@ Configurable via `-w / --work`.
 
 ## Known issues
 
-### Kernel SIGCHLD race (Fedora 44, kernel 7.0.11)
-
-Bash 5.3.9 AND zsh 5.9 crash non-deterministically when ANY child process (including `cp`, `echo`, `python3`) exits.
-
-**Mitigation strategy:**
-1. Phase 1: single Python subprocess for all ffprobe calls
-2. Phase 4: single Python heredoc for ALL ffmpeg calls (resumable)
-3. Phase 5: zero child processes (pre-computed data, builtins only)
-4. Phase 6: builtins only (parameter expansion, loops)
-
-When the shell crashes mid-encode, restarting the script resumes from where it left off (Python `run_ff` skips existing output files).
-
-### SRT subtitles require font rendering
-
-SRT subtitles are skipped by default because tsMuxeR 2.7.0 cannot render fonts on Linux. Only PGS (`.sup`) subtitles are included in the output.
-
 ### Corrupt H.264 source streams
 
 Some discs have corrupt H.264 in clips. The script gracefully skips these — the BD output will lack video for the affected clips, but won't fail.
@@ -137,5 +123,9 @@ Movie-only mode allocates ALL space to video. Audio + subtitle + tsMuxeR contain
 - `{1..0}` in zsh expands to `1 0` (descending range, not empty) — use C-style `for ((...))`
 - `$(< file)` in zsh is a subshell (not a builtin like in bash) — use `read < file`
 - Work dirs from dry-runs accumulate — clean up `<output>.work` regularly
-- **The log buffering issue**: `stdout` is line-buffered, but Python `sys.stderr` writes are unbuffered with `-u`. Progress may appear after Python exits rather than in real time.
+- **Log buffering**: `stdout` is line-buffered, but Python `sys.stderr` writes are unbuffered with `-u`. Progress may appear after Python exits rather than in real time.
 - `EXTRAS_CLIPS` and `MAIN_CLIPS` have trailing newlines from the `while read` loop — trimmed with `${VAR%$'\n'}` before use.
+- There are **6 Python heredocs** (PYEOF blocks) in the script: MPLS parsing (line 156), clip probing (line 291), inventory assembly (line 325), classification (line 432), budget calculation (line 560), and encoding (line 882). The pre-compute and MKV playlist blocks use `python3 -c` instead.
+- `systemd-run` is **required** for both the shell `run_ff` function and pre-compute phase. It is listed in `check_deps` indirectly (via `run_ff` shell function) but not explicitly. If systemd user services aren't available, the script will fail at runtime.
+- In zsh, `local` outside a function behaves like a regular assignment. The surgical rebuild block uses `local` at script top-level (lines 1335-1336, 1352) — this is safe but non-idiomatic.
+- **Pass 2 encoding validation**: After pass 2, the script validates `.h264` output with a NAL unit start code check (`\x00\x00\x00\x01` or `\x00\x00\x01`). Corrupt files (e.g. from VC-1 decode failures) are removed so they don't reach tsMuxeR. Previously, the retry loop accepted any non-empty file, which caused tsMuxeR `Unsupported codec` errors.

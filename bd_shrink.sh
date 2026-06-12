@@ -1124,6 +1124,7 @@ if main_clips:
             continue
 
         # Pass 2
+        pass2_ok = False
         for attempt in range(3):
             cmd = ['ffmpeg', '-y', '-v', 'error', '-i', src,
                    '-map', '0:v:0', '-c:v', 'libx264', '-preset', main_preset,
@@ -1134,17 +1135,34 @@ if main_clips:
             try:
                 r = subprocess.run(cmd, timeout=None, capture_output=False)
                 if r.returncode == 0:
+                    pass2_ok = True
+                    break
+                # Negative returncode = killed by signal (partial output may be usable)
+                if r.returncode < 0 and os.path.isfile(out_video) and os.path.getsize(out_video) > 0:
+                    pass2_ok = True
                     break
             except:
-                pass
-            if os.path.isfile(out_video) and os.path.getsize(out_video) > 0:
-                break
+                # subprocess.run itself failed (e.g. shell crash); partial output may be usable
+                if os.path.isfile(out_video) and os.path.getsize(out_video) > 0:
+                    pass2_ok = True
+                    break
             sys.stderr.write('  Pass 2 attempt {} failed - retrying\n'.format(attempt + 1))
             for f in glob.glob(pass_log + '*'):
                 try: os.remove(f)
                 except: pass
 
-        if os.path.isfile(out_video) and os.path.getsize(out_video) > 0:
+        # Validate output is a valid H.264 raw stream before accepting
+        if pass2_ok and os.path.isfile(out_video) and os.path.getsize(out_video) > 0:
+            try:
+                with open(out_video, 'rb') as vf:
+                    magic = vf.read(4)
+                if len(magic) >= 3 and magic[:3] not in (b'\x00\x00\x00', b'\x00\x00\x01'):
+                    sys.stderr.write('  WARNING: {} may be corrupt (bad H.264 stream)\n'.format(clip))
+                    pass2_ok = False
+            except:
+                pass2_ok = False
+
+        if pass2_ok:
             sys.stderr.write('    done ({} audio, {} subtitle)\n'.format(audio_tracks, sub_tracks))
             for f in glob.glob(pass_log + '*'):
                 try: os.remove(f)
@@ -1154,6 +1172,9 @@ if main_clips:
             for f in glob.glob(pass_log + '*'):
                 try: os.remove(f)
                 except: pass
+            # Remove corrupt output so meta construction doesn't pick it up
+            try: os.remove(out_video)
+            except: pass
 
 PYEOF
 log "  Encoding complete."
@@ -1200,7 +1221,7 @@ if $MOVIE_ONLY; then
     first=true
     for clip in $MAIN_CLIPS; do
         vf="$ENCODE_DIR/${clip}_video.h264"
-        [[ -f "$vf" ]] || { warn "Missing video for clip ${clip}"; continue; }
+        [[ -f "$vf" && -s "$vf" ]] || { warn "Missing/empty video for clip ${clip}"; continue; }
         if $first; then
             echo "V_MPEG4/ISO/AVC, \"$vf\", fps=$fps, insertSEI, contSPS" >> "$META_FILE"
         else
@@ -1208,6 +1229,9 @@ if $MOVIE_ONLY; then
         fi
         first=false
     done
+    if $first; then
+        die "No valid video tracks found for any main clip — check encoding output in $ENCODE_DIR"
+    fi
 
     # Write audio tracks (grouped by track index across clips)
     for ((aidx = 0; aidx < max_audio; aidx++)); do
