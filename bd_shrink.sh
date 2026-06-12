@@ -480,25 +480,36 @@ for pl_name, pl_data in pl_sorted:
         # Short clips with video -> menu animations/transitions
         menu_pls.append(pl_name)
 
-# Re-classify: the LONGEST playlist(s) are the main movie.
-# If multiple playlists have similar durations (within 30% of longest),
-# they are likely alternate cuts or angles of the same film.
+# Re-classify: the LARGEST long playlist(s) are the main movie.
+# Real movies have both long duration AND large size. Some discs contain
+# bogus playlists that repeat a short clip many times, giving them a huge
+# duration but tiny size; these must not be selected as the main movie.
+# Playlists with similar durations to the size-based main movie are treated
+# as alternate cuts or angles.
 if extras_pls:
-    first_name = extras_pls[0]
-    longest_dur = playlists[first_name]['duration']
-    movie_threshold = longest_dur * 0.70
+    movie_candidates = [pl_name for pl_name in extras_pls
+                        if playlists[pl_name]['duration'] >= 600]
+    if movie_candidates:
+        # Pick the candidate with the largest total size as the main movie
+        main_movie_pls = [max(movie_candidates,
+                              key=lambda x: playlists[x].get('total_size_mb', 0))]
+        main_dur = playlists[main_movie_pls[0]]['duration']
 
-    new_extras = []
-    for pl_name in extras_pls:
-        pl_dur = playlists[pl_name]['duration']
-        if pl_dur >= movie_threshold and pl_dur >= 600:
-            main_movie_pls.append(pl_name)
-        else:
-            new_extras.append(pl_name)
-    extras_pls = new_extras
-elif not main_movie_pls and extras_pls:
-    # If nothing classified as main movie, promote the longest extra
-    main_movie_pls.append(extras_pls.pop(0))
+        # Include other candidates with similar duration as alternate cuts/angles
+        new_extras = []
+        for pl_name in extras_pls:
+            if pl_name == main_movie_pls[0]:
+                continue
+            pl_dur = playlists[pl_name]['duration']
+            # Similar duration to main movie -> alternate cut/angle
+            if main_dur * 0.70 <= pl_dur <= main_dur * 1.30:
+                main_movie_pls.append(pl_name)
+            else:
+                new_extras.append(pl_name)
+        extras_pls = new_extras
+    else:
+        # No long playlists; promote the longest extra
+        main_movie_pls.append(extras_pls.pop(0))
 
 # Handle orphan clips (referenced by no playlist — usually menu graphics/sounds)
 orphan_info = {}
