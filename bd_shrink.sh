@@ -1225,6 +1225,7 @@ if $MOVIE_ONLY; then
     done
 
     # Write subtitle tracks (grouped by track index across clips)
+    srt_skipped=false
     for ((sidx = 0; sidx < max_subs; sidx++)); do
         first=true
         for clip in $MAIN_CLIPS; do
@@ -1233,26 +1234,23 @@ if $MOVIE_ONLY; then
             if [[ -f "$sf_sup" ]]; then
                 sf="$sf_sup"; scodec="S_HDMV/PGS"
             elif [[ -f "$sf_srt" ]]; then
-                sf="$sf_srt"; scodec="S_TEXT/UTF8"
+                # Skip SRT subtitles — tsMuxeR 2.7.0 lacks font rendering on Linux
+                srt_skipped=true
+                continue
             else
                 continue
             fi
             if $first; then
-                if [[ "$scodec" == "S_TEXT/UTF8" ]]; then
-                    echo "${scodec}, \"$sf\", fps=$fps, video-width=${CLIP_WIDTH[$clip]:-1920}, video-height=${CLIP_HEIGHT[$clip]:-1080}" >> "$META_FILE"
-                else
-                    echo "${scodec}, \"$sf\"" >> "$META_FILE"
-                fi
+                echo "${scodec}, \"$sf\"" >> "$META_FILE"
             else
-                if [[ "$scodec" == "S_TEXT/UTF8" ]]; then
-                    echo "+${scodec}, \"$sf\", fps=$fps, video-width=${CLIP_WIDTH[$clip]:-1920}, video-height=${CLIP_HEIGHT[$clip]:-1080}" >> "$META_FILE"
-                else
-                    echo "+${scodec}, \"$sf\"" >> "$META_FILE"
-                fi
+                echo "+${scodec}, \"$sf\"" >> "$META_FILE"
             fi
             first=false
         done
     done
+    if $srt_skipped; then
+        warn "SRT subtitles skipped — tsMuxeR font rendering unsupported. Use PGS subs instead."
+    fi
 
     # Dump meta file for debugging
     log "  tsMuxeR meta file:"
