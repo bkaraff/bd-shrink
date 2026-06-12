@@ -2,7 +2,7 @@
 
 ## Project overview
 
-Single-file **zsh** script (~1470 lines) that shrinks BD50 Blu-ray backups or MKV files to BD25-compatible BDMV folders. The `-s` flag accepts BDMV folders or **.mkv files** (MKV forces movie-only mode). Built-in Python heredocs handle MPLS binary parsing, MKV demuxing, and data processing. Output is authored with `tsMuxeR`.
+Single-file **zsh** script (~1476 lines) that shrinks BD50 Blu-ray backups or MKV files to BD25-compatible BDMV folders. The `-s` flag accepts BDMV folders or **.mkv files** (MKV forces movie-only mode). Built-in Python heredocs handle MPLS binary parsing, MKV demuxing, and data processing. Output is authored with `tsMuxeR`.
 
 ## Key commands
 
@@ -127,6 +127,7 @@ Movie-only mode allocates ALL space to video. Audio + subtitle + tsMuxeR contain
 - Work dirs from dry-runs accumulate — clean up `<output>.work` regularly
 - **Log buffering**: `stdout` is line-buffered, but Python `sys.stderr` writes are unbuffered with `-u`. Progress may appear after Python exits rather than in real time.
 - `EXTRAS_CLIPS` and `MAIN_CLIPS` have trailing newlines from the `while read` loop — trimmed with `${VAR%$'\n'}` before use.
+- Playlist `clips` arrays are deduplicated during inventory assembly (preserving order). Duplicate playitems referencing the same clip are collapsed so each clip encodes once and appears once in the tsMuxeR meta file.
 - There are **6 Python heredocs** (PYEOF blocks) in the script: MPLS parsing (line 156), clip probing (291), inventory assembly (325), classification (432), budget calculation (560), and encoding (882). The pre-compute and MKV playlist blocks use `python3 -c` instead.
 - `systemd-run` is **required** for both the shell `run_ff` function and pre-compute phase. It is listed in `check_deps` indirectly (via `run_ff` shell function) but not explicitly. If systemd user services aren't available, the script will fail at runtime.
 - In zsh, `local` outside a function behaves like a regular assignment. The surgical rebuild block uses `local` at top-level (lines 1359, 1360, 1376) — this is safe but non-idiomatic.

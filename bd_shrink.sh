@@ -396,19 +396,25 @@ inventory = {
 }
 
 for pl_name, pl_data in playlists.items():
+    # Deduplicate clips while preserving order
+    playlist_clips = list(dict.fromkeys(item['clip'] for item in pl_data['playitems']))
     summary = {
         'filename': pl_name,
         'duration': round(pl_data['duration'], 1),
         'chapters': pl_data['chapters'],
         'chapter_times': pl_data.get('chapter_times', []),
         'subpaths': pl_data['subpaths'],
-        'clips': [item['clip'] for item in pl_data['playitems']],
+        'clips': playlist_clips,
         'total_clip_dur': round(sum(item['duration'] for item in pl_data['playitems']), 1),
     }
-    # Calculate total size from clips
+    # Calculate total size from unique clips
     total_size = 0
+    seen_clips = set()
     for item in pl_data['playitems']:
         cid = item['clip']
+        if cid in seen_clips:
+            continue
+        seen_clips.add(cid)
         if cid in clip_summaries:
             total_size += clip_summaries[cid].get('size_bytes', 0)
     summary['total_size_mb'] = round(total_size / 1048576, 1)
