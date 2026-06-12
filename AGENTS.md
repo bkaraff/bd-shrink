@@ -2,7 +2,7 @@
 
 ## Project overview
 
-Single-file **zsh** script (1470 lines) that shrinks BD50 Blu-ray backups or MKV files to BD25-compatible BDMV folders. The `-s` flag accepts BDMV folders or **.mkv files** (MKV forces movie-only mode). Built-in Python heredocs handle MPLS binary parsing, MKV demuxing, and data processing. Output is authored with `tsMuxeR`.
+Single-file **zsh** script (~1470 lines) that shrinks BD50 Blu-ray backups or MKV files to BD25-compatible BDMV folders. The `-s` flag accepts BDMV folders or **.mkv files** (MKV forces movie-only mode). Built-in Python heredocs handle MPLS binary parsing, MKV demuxing, and data processing. Output is authored with `tsMuxeR`.
 
 ## Key commands
 
@@ -34,14 +34,14 @@ cd ~/projects/bd-shrink && git add ... && git commit -m "..." && git push
 
 ## Architecture
 
-Single file `bd_shrink.sh` (1470 lines). Shebang: `#!/usr/bin/env zsh`. No separate library files.
+Single file `bd_shrink.sh`. Shebang: `#!/usr/bin/env zsh`. No separate library files.
 
 **Phases:**
 1. **Inventory** — parse `.mpls` (Python heredoc, binary struct), probe `.m2ts` (single Python subprocess); for MKV, demux streams via ffprobe
 2. **Classify** — longest playlist(s) = main movie, rest = extras or menus; MKV is always a single movie
 3. **Budget** — calculate remaining space and target bitrate for main movie
 4. **Pre-compute** — single `systemd-run` wrapping a Python script that writes clip metadata (`.clip_precompute.txt`, `.budget_values.txt`, `.clip_fps.txt`, `.all_clips.txt`, `.main_playlist.txt`, `.main_fps.txt`, etc.)
-5. **Encode** — single bare `python3 -u << PYEOF` heredoc handles ALL extras + main movie encoding via `subprocess.run()`. NOT wrapped in systemd-run. See below.
+5. **Encode** — single bare `python3 -u << PYEOF` heredoc handles ALL extras + main movie encoding via `subprocess.run()`. NOT wrapped in systemd-run.
 6. **Rebuild** — surgical (keep original menus) or fresh `tsMuxeR` authoring (`--movie-only`). Uses shell `run_ff` function (systemd-run wrapper) for each `cp`/`tsMuxeR` call.
 7. **Validate** — file count, CLPI verification (builtins only) then print `.work` retention message
 
@@ -100,12 +100,14 @@ Configurable via `-w / --work`.
 
 ## Test data
 
-| Disc | Path | Size | Notes |
-|------|------|------|-------|
-| Dolemite | `/mnt/downloads/Dolemite.../BDMV` | 46.39 GB | IGS menus, 2 movies, test disc |
-| Aesthetics of a Bullet | `/data-nvme1/aesthetics-src/BDMV` | 36.91 GB | IGS menus, 1 movie, many corrupt H.264 |
-| Internal Affairs | `...Incubo/BDMV` | 46.26 GB | IGS, 19 clips, 14 playlists, tested surgical+iso |
-| Gonza MKV | `/data-nvme1/Gonza.the.Spearman...mkv` | 34 GB | 2h6m, 1 AC3, 1 PGS sub, SRT skipped |
+Example discs used for regression testing:
+
+| Disc | Path | Notes |
+|------|------|-------|
+| Dolemite | `/mnt/downloads/Dolemite.../BDMV` | IGS menus, 2 movies |
+| Aesthetics of a Bullet | `/data-nvme1/aesthetics-src/BDMV` | IGS menus, corrupt H.264 |
+| Internal Affairs | `...Incubo/BDMV` | IGS, 19 clips, 14 playlists |
+| Gonza MKV | `/data-nvme1/Gonza.the.Spearman...mkv` | 2h6m, 1 AC3, 1 PGS sub |
 
 ## Known issues
 
@@ -121,11 +123,11 @@ Movie-only mode allocates ALL space to video. Audio + subtitle + tsMuxeR contain
 
 - `git -C ~/projects/bd-shrink push` fails — use `cd` or `workdir` parameter
 - `{1..0}` in zsh expands to `1 0` (descending range, not empty) — use C-style `for ((...))`
-- `$(< file)` in zsh is a subshell (not a builtin like in bash) — use `read < file`
+- Use `read < file` for line-oriented metadata reads; the script reads metadata files with `read`/`while read` loops, not `$(< file)`
 - Work dirs from dry-runs accumulate — clean up `<output>.work` regularly
 - **Log buffering**: `stdout` is line-buffered, but Python `sys.stderr` writes are unbuffered with `-u`. Progress may appear after Python exits rather than in real time.
 - `EXTRAS_CLIPS` and `MAIN_CLIPS` have trailing newlines from the `while read` loop — trimmed with `${VAR%$'\n'}` before use.
-- There are **6 Python heredocs** (PYEOF blocks) in the script: MPLS parsing (line 156), clip probing (line 291), inventory assembly (line 325), classification (line 432), budget calculation (line 560), and encoding (line 882). The pre-compute and MKV playlist blocks use `python3 -c` instead.
+- There are **6 Python heredocs** (PYEOF blocks) in the script: MPLS parsing (line 156), clip probing (291), inventory assembly (325), classification (432), budget calculation (560), and encoding (882). The pre-compute and MKV playlist blocks use `python3 -c` instead.
 - `systemd-run` is **required** for both the shell `run_ff` function and pre-compute phase. It is listed in `check_deps` indirectly (via `run_ff` shell function) but not explicitly. If systemd user services aren't available, the script will fail at runtime.
-- In zsh, `local` outside a function behaves like a regular assignment. The surgical rebuild block uses `local` at script top-level (lines 1335-1336, 1352) — this is safe but non-idiomatic.
-- **Pass 2 encoding validation**: After pass 2, the script validates `.h264` output with a NAL unit start code check (`\x00\x00\x00\x01` or `\x00\x00\x01`). Corrupt files (e.g. from VC-1 decode failures) are removed so they don't reach tsMuxeR. Previously, the retry loop accepted any non-empty file, which caused tsMuxeR `Unsupported codec` errors.
+- In zsh, `local` outside a function behaves like a regular assignment. The surgical rebuild block uses `local` at top-level (lines 1359, 1360, 1376) — this is safe but non-idiomatic.
+- **Pass 2 encoding validation**: After pass 2, the script validates `.h264` output by checking for an Annex B start code (`\x00\x00\x00` or `\x00\x00\x01`) in the first bytes. Corrupt files (e.g. from VC-1 decode failures) are removed so they don't reach tsMuxeR. Previously, the retry loop accepted any non-empty file, which caused tsMuxeR `Unsupported codec` errors.
