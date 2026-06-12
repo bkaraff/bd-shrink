@@ -57,7 +57,7 @@ Options:
   --main-audio BITRATE   Main movie audio re-encode bitrate (default: 640k)
   --commentary-ab BITRATE Commentary/secondary audio bitrate (default: 128k)
   --movie-only           Movie-only backup (no menus, no extras, fresh BD author)
-  --iso                  Output ISO instead of BDMV folder (combine with --movie-only)
+  --iso                  Output ISO instead of BDMV folder (works with any mode)
   -f, --force            Overwrite output directory if it exists
   -n, --dry-run          Show what would be done without encoding
   -w, --work DIR         Working directory (default: <output>.work)
