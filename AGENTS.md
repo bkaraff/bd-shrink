@@ -2,7 +2,7 @@
 
 ## Project overview
 
-Single-file **zsh** script (~1675 lines) that shrinks BD50 Blu-ray backups or MKV files to BD25-compatible BDMV folders. The `-s` flag accepts BDMV folders or **.mkv files** (MKV forces movie-only mode). Built-in Python heredocs handle MPLS binary parsing, MKV demuxing, and data processing. Output is authored with `tsMuxeR`.
+Single-file **zsh** script (~1682 lines) that shrinks BD50 Blu-ray backups or MKV files to BD25-compatible BDMV folders. The `-s` flag accepts BDMV folders or **.mkv files** (MKV forces movie-only mode). Built-in Python heredocs handle MPLS binary parsing, MKV demuxing, and data processing. Output is authored with `tsMuxeR`.
 
 ## Key commands
 
@@ -40,7 +40,7 @@ In TUI mode:
 - **Source selection** shows the contents of `SOURCE_ROOT` in a `gum filter` fuzzy finder. Select a folder or `.mkv`/`.m2ts`/`.ts` file. The `[ Open file browser ]` item (or pressing escape) switches to `gum file` for browsing outside `SOURCE_ROOT`. Navigation: `↑/↓` move, `→` enter directory, `←` go up, `enter` select.
 - **BDMV auto-detection**: if the selected folder is not a BDMV folder, the script looks for `BDMV/index.bdmv` directly inside it or one level deeper.
 - **Options**: output path, movie-only mode, ISO output, and overwrite-existing are prompted interactively via a single `gum choose --no-limit` checklist.
-- **Summary**: a colorized rounded box shows source, source size, output, options, preset, and target size, followed by a styled Start/Cancel confirmation.
+- **Summary**: a colorized rounded box using the Catppuccin Mocha palette (blue accent `#89b4fa`, labels in muted gray, values in foreground white, booleans green/red) shows source, source size, output, options, preset, and target size, followed by a styled Start/Cancel confirmation.
 
 ## Logging
 

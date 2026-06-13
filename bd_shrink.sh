@@ -23,6 +23,18 @@ OUTPUT_ISO=false
 COMMENTARY_AUDIO_BITRATE="128k"
 USE_TUI=false
 
+# Catppuccin Mocha true-color ANSI codes for TUI styling
+CCTP_RESET=$'\e[0m'
+CCTP_BLUE=$'\e[38;2;137;180;250m'       # #89b4fa accent
+CCTP_GREEN=$'\e[38;2;166;227;161m'      # #a6e3a1
+CCTP_YELLOW=$'\e[38;2;249;226;175m'     # #f9e2af
+CCTP_RED=$'\e[38;2;243;139;168m'        # #f38ba8
+CCTP_TEXT=$'\e[38;2;205;214;244m'       # #cdd6f4 foreground
+CCTP_SUBTEXT1=$'\e[38;2;186;194;222m'   # #bac2de
+CCTP_SUBTEXT0=$'\e[38;2;166;173;200m'   # #a6adc8
+CCTP_OVERLAY1=$'\e[38;2;127;132;156m'   # #7f849c
+CCTP_BOLD=$'\e[1m'
+
 # ─── config / logging / source-root defaults ─────────────────────────────────
 # Source root for TUI file browser persistence.
 # Can be seeded via environment variable or saved to ~/.config/bd-shrink/source_root.
@@ -94,11 +106,12 @@ run_tui() {
     command -v gum &>/dev/null || die "gum is required for --tui mode (https://github.com/charmbracelet/gum)"
 
     gum style --border double --align center --width 60 --padding "1 2" \
-        --foreground 212 "bd_shrink" "" "Shrink BD50 → BD25"
+        --border-foreground "#89b4fa" --foreground "#cdd6f4" \
+        "bd_shrink" "" "Shrink BD50 → BD25"
 
     # ── Source root ──
     if [[ -n "$SOURCE_ROOT" ]]; then
-        gum style --foreground 240 "Source root: ${SOURCE_ROOT}"
+        gum style --foreground "#7f849c" "Source root: ${SOURCE_ROOT}"
     else
         local start_dir="${HOME}"
         [[ -d "$PWD" ]] && start_dir="$PWD"
@@ -111,7 +124,7 @@ run_tui() {
 
     # ── Source selection ──
     if [[ -z "$SOURCE" ]]; then
-        gum style --foreground 99 --bold "Select source"
+        gum style --foreground "#89b4fa" --bold "Select source"
         # Collect candidates under SOURCE_ROOT: directories and video files
         local dirs=("$SOURCE_ROOT"/*(/N) "$SOURCE_ROOT"/*.mkv(N) "$SOURCE_ROOT"/*.m2ts(N) "$SOURCE_ROOT"/*.ts(N))
         if [[ -f "$SOURCE_ROOT/index.bdmv" ]]; then
@@ -189,7 +202,7 @@ run_tui() {
 
     # ── Options ──
     if ! $MOVIE_ONLY || ! $OUTPUT_ISO || ([[ -d "$OUTPUT" ]] && ! $FORCE); then
-        gum style --foreground 99 --bold "Options"
+        gum style --foreground "#89b4fa" --bold "Options"
         typeset -a opt_labels
         ! $MOVIE_ONLY && opt_labels+=("Movie-only (no menus/extras)")
         ! $OUTPUT_ISO && opt_labels+=("Output ISO")
@@ -213,30 +226,24 @@ run_tui() {
         source_size="unknown"
     fi
 
-    # ANSI color codes for inline styling inside the gum box
-    local c_reset=$'\e[0m'
-    local c_header=$'\e[1;38;5;212m'
-    local c_label=$'\e[38;5;250m'
-    local c_value=$'\e[38;5;255m'
-    local c_true=$'\e[38;5;82m'
-    local c_false=$'\e[38;5;245m'
-    local c_movie c_iso
-    $MOVIE_ONLY && c_movie="$c_true" || c_movie="$c_false"
-    $OUTPUT_ISO && c_iso="$c_true" || c_iso="$c_false"
+    local c_movie="${CCTP_RED}"
+    $MOVIE_ONLY && c_movie="${CCTP_GREEN}"
+    local c_iso="${CCTP_RED}"
+    $OUTPUT_ISO && c_iso="${CCTP_GREEN}"
 
     gum style --border rounded --padding "1 2" --width 64 \
-        --margin "1 0" --border-foreground 212 \
-        "${c_header}  ▶ Ready to start${c_reset}" \
+        --margin "1 0" --border-foreground "#89b4fa" \
+        "${CCTP_BLUE}${CCTP_BOLD-}  ▶ Ready to start${CCTP_RESET}" \
         "" \
-        "${c_label}  Source:${c_reset}      ${c_value}${SOURCE}${c_reset}" \
-        "${c_label}  Source size:${c_reset} ${c_value}${source_size}${c_reset}" \
-        "${c_label}  Output:${c_reset}      ${c_value}${OUTPUT}${c_reset}" \
-        "${c_label}  Movie-only:${c_reset}  ${c_movie}${MOVIE_ONLY}${c_reset}" \
-        "${c_label}  ISO:${c_reset}         ${c_iso}${OUTPUT_ISO}${c_reset}" \
-        "${c_label}  Preset:${c_reset}      ${c_value}${MAIN_PRESET}${c_reset}" \
-        "${c_label}  Target:${c_reset}      ${c_value}${TARGET_GB} GB${c_reset}"
+        "${CCTP_SUBTEXT1}  Source:${CCTP_RESET}      ${CCTP_TEXT}${SOURCE}${CCTP_RESET}" \
+        "${CCTP_SUBTEXT1}  Source size:${CCTP_RESET} ${CCTP_TEXT}${source_size}${CCTP_RESET}" \
+        "${CCTP_SUBTEXT1}  Output:${CCTP_RESET}      ${CCTP_TEXT}${OUTPUT}${CCTP_RESET}" \
+        "${CCTP_SUBTEXT1}  Movie-only:${CCTP_RESET}  ${c_movie}${MOVIE_ONLY}${CCTP_RESET}" \
+        "${CCTP_SUBTEXT1}  ISO:${CCTP_RESET}         ${c_iso}${OUTPUT_ISO}${CCTP_RESET}" \
+        "${CCTP_SUBTEXT1}  Preset:${CCTP_RESET}      ${CCTP_TEXT}${MAIN_PRESET}${CCTP_RESET}" \
+        "${CCTP_SUBTEXT1}  Target:${CCTP_RESET}      ${CCTP_TEXT}${TARGET_GB} GB${CCTP_RESET}"
 
-    gum confirm --default=true --prompt.foreground 212 \
+    gum confirm --default=true --prompt.foreground "#89b4fa" \
         --affirmative "Start" --negative "Cancel" \
         "Begin processing?" || exit 0
 }
