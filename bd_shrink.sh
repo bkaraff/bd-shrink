@@ -104,7 +104,7 @@ run_tui() {
         [[ -d "$PWD" ]] && start_dir="$PWD"
         [[ -d /data-nvme1 ]] && start_dir="/data-nvme1"
         SOURCE_ROOT=$(gum file --directory --cursor="▸ " "$start_dir" \
-            --header="Select your source folder root (remembered for next time)") || exit 1
+            --header="Select source root — ↑↓ move, → enter dir, ← go up, enter select") || exit 1
         mkdir -p "$CONFIG_DIR"
         printf '%s\n' "$SOURCE_ROOT" > "$SOURCE_ROOT_FILE"
     fi
@@ -119,39 +119,44 @@ run_tui() {
         elif [[ ${#dirs[@]} -eq 0 ]]; then
             # Empty root or leaf: fall back to file browser
             SOURCE=$(gum file --directory --cursor="▸ " "$SOURCE_ROOT" \
-                --header="Select source folder") || exit 1
+                --header="Select source folder — ↑↓ move, → enter dir, ← go up, enter select") || exit 1
         else
             # Build clean names for display, keep full paths for lookup
             typeset -a names paths
+            typeset browse_label="[ Open file browser ]"
             for d in "${dirs[@]}"; do
                 names+=("${d##*/}")
                 paths+=("$d")
             done
+            names+=("$browse_label")
+            paths+=("__BROWSE__")
 
             local choice
             choice=$(print -l "${(@)names}" \
-                | gum filter --placeholder "Search for a source..." || true)
+                | gum filter --placeholder "Search or select [ Open file browser ]" || true)
 
             # If filter returned empty (user pressed escape), fall back to file browser
             if [[ -z "$choice" ]]; then
-                SOURCE=$(gum file --directory --cursor="▸ " "$SOURCE_ROOT" \
-                    --header="Select source folder") || exit 1
-            else
-                # Map display name back to full path
-                local idx picked
-                for ((idx=1; idx <= ${#names[@]}; idx++)); do
-                    if [[ "${names[$idx]}" == "$choice" ]]; then
-                        picked="${paths[$idx]}"
-                        break
-                    fi
-                done
+                choice="$browse_label"
+            fi
 
-                if [[ -d "$picked" ]]; then
-                    SOURCE="$picked"
-                else
-                    SOURCE="$picked"
-                    MOVIE_ONLY=true  # video file forces movie-only
+            # Map display name back to full path
+            local idx picked
+            for ((idx=1; idx <= ${#names[@]}; idx++)); do
+                if [[ "${names[$idx]}" == "$choice" ]]; then
+                    picked="${paths[$idx]}"
+                    break
                 fi
+            done
+
+            if [[ "$picked" == "__BROWSE__" ]]; then
+                SOURCE=$(gum file --directory --cursor="▸ " "$SOURCE_ROOT" \
+                    --header="Select source folder — ↑↓ move, → enter dir, ← go up, enter select") || exit 1
+            elif [[ -d "$picked" ]]; then
+                SOURCE="$picked"
+            else
+                SOURCE="$picked"
+                MOVIE_ONLY=true  # video file forces movie-only
             fi
         fi
 
