@@ -96,102 +96,125 @@ run_tui() {
     gum style --border double --align center --width 60 --padding "1 2" \
         --foreground 212 "bd_shrink" "" "Shrink BD50 → BD25"
 
-    # Source root (persistent across runs)
+    # ── Source root ──
+    if [[ -n "$SOURCE_ROOT" ]]; then
+        gum style --foreground 240 "Source root: ${SOURCE_ROOT}"
+        if gum confirm --default=false "Change source root directory?"; then
+            SOURCE_ROOT=""
+        fi
+    fi
     if [[ -z "$SOURCE_ROOT" ]]; then
         local start_dir="${HOME}"
         [[ -d "$PWD" ]] && start_dir="$PWD"
         [[ -d /data-nvme1 ]] && start_dir="/data-nvme1"
         SOURCE_ROOT=$(gum file --directory --cursor="▸ " "$start_dir" \
-            --header="Select your source folder root (will be remembered)") || exit 1
+            --header="Select your source folder root (remembered for next time)") || exit 1
         mkdir -p "$CONFIG_DIR"
         printf '%s\n' "$SOURCE_ROOT" > "$SOURCE_ROOT_FILE"
     fi
 
-    # Source selection
+    # ── Source selection ──
     if [[ -z "$SOURCE" ]]; then
-        if gum confirm --default=false --prompt.foreground="240" \
-                "Is the source an .mkv file?"; then
-            SOURCE=$(gum file --file --cursor="▸ " "$SOURCE_ROOT") || exit 1
+        gum style --foreground 99 --bold "Select source"
+        # Collect candidates under SOURCE_ROOT: directories and video files
+        local dirs=("$SOURCE_ROOT"/*(/N) "$SOURCE_ROOT"/*.mkv(N) "$SOURCE_ROOT"/*.m2ts(N) "$SOURCE_ROOT"/*.ts(N))
+        if [[ -f "$SOURCE_ROOT/index.bdmv" ]]; then
+            SOURCE="$SOURCE_ROOT"
+        elif [[ ${#dirs[@]} -eq 0 ]]; then
+            # Empty root or leaf: fall back to file browser
+            SOURCE=$(gum file --directory --cursor="▸ " "$SOURCE_ROOT" \
+                --header="Select source folder") || exit 1
         else
-            while true; do
-                local selected
-                selected=$(gum file --directory --cursor="▸ " "$SOURCE_ROOT" \
-                    --header="Select source folder under ${SOURCE_ROOT}") || exit 1
-
-                # Direct BDMV selection
-                if [[ -f "$selected/index.bdmv" ]]; then
-                    SOURCE="$selected"
-                    break
-                fi
-
-                # Parent contains BDMV subfolder
-                if [[ -f "$selected/BDMV/index.bdmv" ]]; then
-                    SOURCE="$selected/BDMV"
-                    break
-                fi
-
-                # Search one level deeper for BDMV
-                local bdmv_candidates=("$selected"/*/BDMV(N))
-                if [[ -n "${bdmv_candidates[1]:-}" ]] && [[ -f "${bdmv_candidates[1]}/index.bdmv" ]]; then
-                    SOURCE="${bdmv_candidates[1]}"
-                    break
-                fi
-
-                warn "No BDMV folder found under $selected"
-                gum confirm --default=true "Try again?" || exit 1
+            # Build clean names for display, keep full paths for lookup
+            typeset -a names paths
+            typeset browse_name="  Open file browser..."
+            for d in "${dirs[@]}"; do
+                names+=("${d##*/}")
+                paths+=("$d")
             done
+            names+=("$browse_name")
+            paths+=("__BROWSE__")
+
+            local choice
+            choice=$(print -l "${(@)names}" \
+                | gum filter --placeholder "Search or browse for a source..." || true)
+            if [[ -z "$choice" ]]; then
+                exit 1
+            fi
+
+            # Map display name back to full path
+            local idx picked
+            for ((idx=1; idx <= ${#names[@]}; idx++)); do
+                if [[ "${names[$idx]}" == "$choice" ]]; then
+                    picked="${paths[$idx]}"
+                    break
+                fi
+            done
+
+            if [[ "$picked" == "__BROWSE__" ]]; then
+                SOURCE=$(gum file --directory --cursor="▸ " "$SOURCE_ROOT" \
+                    --header="Select source folder") || exit 1
+            elif [[ -d "$picked" ]]; then
+                SOURCE="$picked"
+            else
+                SOURCE="$picked"
+                MOVIE_ONLY=true  # video file forces movie-only
+            fi
+        fi
+
+        # Auto-detect BDMV subfolder
+        if [[ -n "$SOURCE" ]] && [[ -d "$SOURCE" ]] && [[ ! -f "$SOURCE/index.bdmv" ]]; then
+            if [[ -f "$SOURCE/BDMV/index.bdmv" ]]; then
+                SOURCE="$SOURCE/BDMV"
+            else
+                typeset -a found_bdmv
+                found_bdmv=("$SOURCE"/*/BDMV(N))
+                if [[ -n "${found_bdmv[1]:-}" ]] && [[ -f "${found_bdmv[1]}/index.bdmv" ]]; then
+                    SOURCE="${found_bdmv[1]}"
+                fi
+            fi
         fi
     fi
 
-    # Output
+    # ── Output ──
     if [[ -z "$OUTPUT" ]]; then
         local default_out
         if [[ -d "$SOURCE" ]]; then
-            # BDMV folder: drop trailing /BDMV and append .bd25
             default_out="${SOURCE%/BDMV}.bd25"
             default_out="${default_out%/}.bd25"
         else
-            # File source: replace extension with .bd25
             default_out="${SOURCE%.*}.bd25"
         fi
+        gum style --foreground 99 --bold "Output"
         OUTPUT=$(gum input --placeholder "$default_out" --prompt "Output directory: ") || exit 1
         [[ -z "$OUTPUT" ]] && OUTPUT="$default_out"
     fi
 
-    # Boolean options
-    if ! $MOVIE_ONLY; then
-        MOVIE_ONLY=$(gum confirm --default=false "Movie-only mode (no menus/extras)?" && echo true || echo false)
-    fi
-    if $MOVIE_ONLY; then
-        KEEP_ONE=true
-    fi
-    if ! $OUTPUT_ISO; then
-        OUTPUT_ISO=$(gum confirm --default=false "Output ISO instead of BDMV folder?" && echo true || echo false)
-    fi
-    if [[ -d "$OUTPUT" ]] && ! $FORCE; then
-        FORCE=$(gum confirm --default=false "Output exists. Overwrite?" && echo true || echo false)
+    # ── Options ──
+    if ! $MOVIE_ONLY || ! $OUTPUT_ISO || ([[ -d "$OUTPUT" ]] && ! $FORCE); then
+        gum style --foreground 99 --bold "Options"
+        typeset -a opt_labels
+        ! $MOVIE_ONLY && opt_labels+=("Movie-only (no menus/extras)")
+        ! $OUTPUT_ISO && opt_labels+=("Output ISO")
+        [[ -d "$OUTPUT" ]] && ! $FORCE && opt_labels+=("Overwrite existing output")
+
+        local chosen=$(print -l "${(@)opt_labels}" \
+            | gum choose --no-limit --height=${#opt_labels[@]} || true)
+        # Match by substrings to avoid word-splitting issues
+        if [[ "$chosen" == *Movie-only* ]]; then MOVIE_ONLY=true; KEEP_ONE=true; fi
+        if [[ "$chosen" == *ISO* ]]; then OUTPUT_ISO=true; fi
+        if [[ "$chosen" == *Overwrite* ]]; then FORCE=true; fi
     fi
 
-    # Optional advanced options
-    if gum confirm --default=false "Show advanced options?"; then
-        MAIN_PRESET=$(gum choose --selected "$MAIN_PRESET" \
-            ultrafast superfast veryfast faster fast medium slow slower veryslow placebo) || true
-        TARGET_GB=$(gum input --value "$TARGET_GB" --prompt "Target size (GB): ") || true
-        if [[ "$TARGET_GB" =~ ^[0-9]+$ ]]; then
-            TARGET_GB="$TARGET_GB"
-        else
-            TARGET_GB=23
-        fi
-    fi
-
-    # Summary
-    gum style --border normal --padding "0 1" \
-        --foreground 99 "Source:  $SOURCE" \
-        "Output:  $OUTPUT" \
-        "Movie-only: $MOVIE_ONLY" \
-        "ISO: $OUTPUT_ISO" \
-        "Preset:  $MAIN_PRESET" \
-        "Target:  ${TARGET_GB} GB"
+    # ── Summary ──
+    gum style --border rounded --padding "1 2" --width 60 \
+        --margin "1 0" --foreground 99 \
+        "  Source:      $SOURCE" \
+        "  Output:      $OUTPUT" \
+        "  Movie-only:  $MOVIE_ONLY" \
+        "  ISO:         $OUTPUT_ISO" \
+        "  Preset:      $MAIN_PRESET" \
+        "  Target:      ${TARGET_GB} GB"
 
     gum confirm --default=true "Start processing?" || exit 0
 }
