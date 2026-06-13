@@ -2,13 +2,19 @@
 
 ## Project overview
 
-Single-file **zsh** script (~1653 lines) that shrinks BD50 Blu-ray backups or MKV files to BD25-compatible BDMV folders. The `-s` flag accepts BDMV folders or **.mkv files** (MKV forces movie-only mode). Built-in Python heredocs handle MPLS binary parsing, MKV demuxing, and data processing. Output is authored with `tsMuxeR`.
+Single-file **zsh** script (~1675 lines) that shrinks BD50 Blu-ray backups or MKV files to BD25-compatible BDMV folders. The `-s` flag accepts BDMV folders or **.mkv files** (MKV forces movie-only mode). Built-in Python heredocs handle MPLS binary parsing, MKV demuxing, and data processing. Output is authored with `tsMuxeR`.
 
 ## Key commands
 
 ```bash
 # Syntax check
 zsh -n bd_shrink.sh
+
+# Interactive TUI (auto-launched when -s/-o are omitted)
+./bd_shrink.sh
+
+# Force TUI even when source/output are provided
+./bd_shrink.sh --tui
 
 # Movie-only (fresh BD, no menus, works on any disc)
 ./bd_shrink.sh -s /path/to/BDMV -o /output -f --movie-only
@@ -30,9 +36,11 @@ Note: `--iso` works with any mode (surgical and movie-only), not just `--movie-o
 When run without `-s`/`-o` in an interactive terminal with `gum` installed, the script launches an interactive TUI instead of erroring. Pass `--tui` to force TUI mode even when args are provided.
 
 In TUI mode:
-- **Source root** (`SOURCE_ROOT`) is prompted once and persisted to `~/.config/bd-shrink/source_root`. On subsequent runs the TUI starts directly in that folder.
-- **Source selection** browses under `SOURCE_ROOT`. If the selected folder is not a BDMV folder, the script looks for `BDMV/index.bdmv` one level down.
-- All other options (output, movie-only, ISO, preset, target size) are prompted interactively.
+- **Source root** (`SOURCE_ROOT`) is prompted once and persisted to `~/.config/bd-shrink/source_root`. On subsequent runs the TUI shows the saved root and starts source selection directly from it. To change the root, delete or edit `~/.config/bd-shrink/source_root`.
+- **Source selection** shows the contents of `SOURCE_ROOT` in a `gum filter` fuzzy finder. Select a folder or `.mkv`/`.m2ts`/`.ts` file. The `[ Open file browser ]` item (or pressing escape) switches to `gum file` for browsing outside `SOURCE_ROOT`. Navigation: `↑/↓` move, `→` enter directory, `←` go up, `enter` select.
+- **BDMV auto-detection**: if the selected folder is not a BDMV folder, the script looks for `BDMV/index.bdmv` directly inside it or one level deeper.
+- **Options**: output path, movie-only mode, ISO output, and overwrite-existing are prompted interactively via a single `gum choose --no-limit` checklist.
+- **Summary**: a colorized rounded box shows source, source size, output, options, preset, and target size, followed by a styled Start/Cancel confirmation.
 
 ## Logging
 
@@ -81,7 +89,7 @@ Single file `bd_shrink.sh`. Shebang: `#!/usr/bin/env zsh`. No separate library f
 
 There are **two separate** `run_ff` definitions — a shell function and a Python function — serving different phases:
 
-**Shell function** (line 35): wraps each command in `systemd-run --user --wait`, making it a transient systemd service rather than a direct child of the shell. Used in Phase 6 (rebuild) for `cp`, `tsMuxeR`, etc. This avoids SIGCHLD because the exiting process is systemd's child, not the shell's.
+**Shell function** (line 54): wraps each command in `systemd-run --user --wait`, making it a transient systemd service rather than a direct child of the shell. Used in Phase 6 (rebuild) for `cp`, `tsMuxeR`, etc. This avoids SIGCHLD because the exiting process is systemd's child, not the shell's.
 
 **Python function** (inside the encoding heredoc): uses `subprocess.run()` for all ffmpeg calls. Checks `out_file` existence before encoding — **resumable** across crashes.
 
@@ -146,7 +154,7 @@ Movie-only mode allocates ALL space to video. Audio + subtitle + tsMuxeR contain
 - `EXTRAS_CLIPS` and `MAIN_CLIPS` have trailing newlines from the `while read` loop — trimmed with `${VAR%$'\n'}` before use.
 - Playlist `clips` arrays are deduplicated during inventory assembly (preserving order). Duplicate playitems referencing the same clip are collapsed so each clip encodes once and appears once in the tsMuxeR meta file.
 - **Main movie classification** prefers the largest long playlist by total size, not the longest by duration. Some discs have bogus playlists that repeat a short clip hundreds of times, producing a huge duration but tiny size; these are now classified as extras.
-- There are **6 Python heredocs** (PYEOF blocks) in the script: MPLS parsing (line 156), clip probing (291), inventory assembly (325), classification (432), budget calculation (560), and encoding (882). The pre-compute and MKV playlist blocks use `python3 -c` instead.
+- There are **6 Python heredocs** (PYEOF blocks) in the script: MPLS parsing (line 344), clip probing (line 479), inventory assembly (line 513), classification (line 626), budget calculation (line 765), and encoding (line 1087). The pre-compute and MKV playlist blocks use `python3 -c` instead.
 - `systemd-run` is **required** for both the shell `run_ff` function and pre-compute phase. It is listed in `check_deps` indirectly (via `run_ff` shell function) but not explicitly. If systemd user services aren't available, the script will fail at runtime.
-- In zsh, `local` outside a function behaves like a regular assignment. The surgical rebuild block uses `local` at top-level (lines 1359, 1360, 1376) — this is safe but non-idiomatic.
+- In zsh, `local` outside a function behaves like a regular assignment. The surgical rebuild block uses `local` at top-level (lines 1564, 1565, 1581) — this is safe but non-idiomatic.
 - **Pass 2 encoding validation**: After pass 2, the script validates `.h264` output by checking for an Annex B start code (`\x00\x00\x00` or `\x00\x00\x01`) in the first bytes. Corrupt files (e.g. from VC-1 decode failures) are removed so they don't reach tsMuxeR. Previously, the retry loop accepted any non-empty file, which caused tsMuxeR `Unsupported codec` errors.
