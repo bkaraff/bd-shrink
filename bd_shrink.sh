@@ -21,6 +21,37 @@ KEEP_ONE=false
 MOVIE_ONLY=false
 OUTPUT_ISO=false
 COMMENTARY_AUDIO_BITRATE="128k"
+USE_TUI=false
+
+# Catppuccin Mocha true-color ANSI codes for TUI styling
+CCTP_RESET=$'\e[0m'
+CCTP_BLUE=$'\e[38;2;137;180;250m'       # #89b4fa accent
+CCTP_GREEN=$'\e[38;2;166;227;161m'      # #a6e3a1
+CCTP_YELLOW=$'\e[38;2;249;226;175m'     # #f9e2af
+CCTP_RED=$'\e[38;2;243;139;168m'        # #f38ba8
+CCTP_TEXT=$'\e[38;2;205;214;244m'       # #cdd6f4 foreground
+CCTP_SUBTEXT1=$'\e[38;2;186;194;222m'   # #bac2de
+CCTP_SUBTEXT0=$'\e[38;2;166;173;200m'   # #a6adc8
+CCTP_OVERLAY1=$'\e[38;2;127;132;156m'   # #7f849c
+CCTP_BOLD=$'\e[1m'
+
+# ─── config / logging / source-root defaults ─────────────────────────────────
+# Source root for TUI file browser persistence.
+# Can be seeded via environment variable or saved to ~/.config/bd-shrink/source_root.
+SOURCE_ROOT="${SOURCE_ROOT:-}"
+CONFIG_DIR="${HOME}/.config/bd-shrink"
+SOURCE_ROOT_FILE="${CONFIG_DIR}/source_root"
+[[ -f "$SOURCE_ROOT_FILE" ]] && SOURCE_ROOT=$(<"$SOURCE_ROOT_FILE")
+
+# Default log directory: /var/log/bd-shrink if writable without root,
+# otherwise fall back to ~/.local/share/bd-shrink/logs.
+if mkdir -p /var/log/bd-shrink 2>/dev/null && [[ -w /var/log/bd-shrink ]]; then
+    LOG_DIR="/var/log/bd-shrink"
+else
+    LOG_DIR="${HOME}/.local/share/bd-shrink/logs"
+    mkdir -p "$LOG_DIR"
+fi
+LOG_FILE="${LOG_DIR}/bd_shrink_$(date +%Y%m%d_%H%M%S).log"
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
 die()  { echo "ERROR: $*" >&2; exit 1; }
@@ -40,7 +71,10 @@ usage() {
     cat <<EOF
 bd_shrink.sh v${VERSION} — shrink BD50 → BD25 with menu preservation
 
-Usage:  bd_shrink.sh -s <source> -o <output> [options]
+Usage:  bd_shrink.sh [-s <source> -o <output>] [options]
+
+When source/output are omitted and gum is available, an interactive TUI
+is launched automatically. Pass --tui to force TUI mode even with args.
 
 Required:
   -s, --source DIR|FILE   Source BDMV folder (must contain index.bdmv) or .mkv file
@@ -61,9 +95,214 @@ Options:
   -f, --force            Overwrite output directory if it exists
   -n, --dry-run          Show what would be done without encoding
   -w, --work DIR         Working directory (default: <output>.work)
+      --tui              Interactive TUI mode (requires gum)
   -h, --help             Show this help
 EOF
     exit 1
+}
+
+# Interactive TUI mode using charmbracelet/gum
+run_tui() {
+    command -v gum &>/dev/null || die "gum is required for --tui mode (https://github.com/charmbracelet/gum)"
+
+    local orig_keep_one=$KEEP_ONE
+
+    while true; do
+        clear
+
+        gum style --border double --align center --width 60 --padding "1 2" \
+            --border-foreground "#89b4fa" --foreground "#cdd6f4" \
+            "bd_shrink" "" "Shrink BD50 → BD25"
+        # ── Source selection ──
+        if [[ -z "$SOURCE" ]]; then
+            gum style --foreground "#89b4fa" --bold "Select source"
+            gum style --foreground "#cdd6f4" \
+                "Choose the movie folder that contains the BDMV directory or video/ISO file."
+            gum confirm --default=true --prompt.foreground "#89b4fa" \
+                --affirmative "Continue" --negative "Exit" \
+                "Continue to source selection?" || exit 0
+
+            # If SOURCE_ROOT is saved, offer a fuzzy list of its contents first.
+            local selected=""
+            if [[ -n "$SOURCE_ROOT" ]] && [[ -d "$SOURCE_ROOT" ]]; then
+                gum style --foreground "#7f849c" "Looking in: ${SOURCE_ROOT}"
+                local dirs=("$SOURCE_ROOT"/*(/N) "$SOURCE_ROOT"/*.mkv(N) "$SOURCE_ROOT"/*.m2ts(N) "$SOURCE_ROOT"/*.ts(N) "$SOURCE_ROOT"/*.iso(N))
+                if [[ ${#dirs[@]} -gt 0 ]]; then
+                    typeset -a names
+                    for d in "${dirs[@]}"; do names+=("${d##*/}"); done
+                    local choice=$(print -l "${(@)names}" \
+                        | gum filter --header="SELECT SOURCE" --placeholder "Search sources (esc = browse file system)..." || true)
+                    if [[ -n "$choice" ]]; then
+                        selected="$SOURCE_ROOT/$choice"
+                    fi
+                fi
+            fi
+
+            # Fall back to the file browser.
+            if [[ -z "$selected" ]]; then
+                local start_dir="$SOURCE_ROOT"
+                [[ -z "$start_dir" ]] && start_dir="/data-nvme1"
+                [[ -z "$start_dir" ]] && start_dir="${HOME}"
+                selected=$(gum file --directory --cursor="▸ " "$start_dir" \
+                    --header="SELECT SOURCE from ${start_dir} — ↑↓ move, → enter dir, ← go up, enter select") || exit 1
+            fi
+
+            # Detect the actual source inside the selected movie folder.
+            local movie_folder=""
+            if [[ -f "$selected/index.bdmv" ]]; then
+                SOURCE="$selected"
+                movie_folder="${selected:h}"
+            elif [[ -f "$selected/BDMV/index.bdmv" ]]; then
+                SOURCE="$selected/BDMV"
+                movie_folder="$selected"
+            elif [[ -f "$selected" ]]; then
+                SOURCE="$selected"
+                movie_folder="${selected:h}"
+                MOVIE_ONLY=true
+            else
+                typeset -a found_bdmv
+                found_bdmv=("$selected"/*/BDMV(N))
+                if [[ -n "${found_bdmv[1]:-}" ]] && [[ -f "${found_bdmv[1]}/index.bdmv" ]]; then
+                    SOURCE="${found_bdmv[1]}"
+                    movie_folder="${found_bdmv[1]:h}"
+                fi
+            fi
+
+            # If no BDMV, look for a video/ISO file directly inside the selected folder.
+            if [[ -z "$SOURCE" ]]; then
+                local videos=("$selected"/*.mkv(N) "$selected"/*.m2ts(N) "$selected"/*.ts(N) "$selected"/*.iso(N))
+                if [[ -n "${videos[1]:-}" ]]; then
+                    SOURCE="${videos[1]}"
+                    movie_folder="$selected"
+                    MOVIE_ONLY=true
+                fi
+            fi
+
+            [[ -z "$SOURCE" ]] && die "No BDMV folder or video file found under $selected"
+
+            # Remember the parent of the movie folder as SOURCE_ROOT.
+            if [[ -n "$movie_folder" ]]; then
+                SOURCE_ROOT="${movie_folder:h}"
+                mkdir -p "$CONFIG_DIR"
+                printf '%s\n' "$SOURCE_ROOT" > "$SOURCE_ROOT_FILE"
+            fi
+        fi
+
+        # ── Output ──
+        if [[ -z "$OUTPUT" ]]; then
+            local default_out
+            if [[ -d "$SOURCE" ]]; then
+                default_out="${SOURCE%/BDMV}.bd25"
+                default_out="${default_out%/}.bd25"
+            else
+                default_out="${SOURCE%.*}.bd25"
+            fi
+            OUTPUT=$(gum input --placeholder "$default_out" --prompt "Output: ") || exit 1
+            [[ -z "$OUTPUT" ]] && OUTPUT="$default_out"
+        fi
+
+        # ── Mode (Full disc vs Movie-only) ──
+        local mode_default="Full disc (keep menus, extras)"
+        $MOVIE_ONLY && mode_default="Movie-only (no menus, fresh BD)"
+
+        local mode_choice=$(print -l \
+                "Full disc (keep menus, extras)" \
+                "Movie-only (no menus, fresh BD)" \
+            | gum choose --limit=1 --height=2 \
+                --header="SELECT MODE" --selected="$mode_default" || true)
+
+        if [[ "$mode_choice" == *Movie-only* ]]; then
+            MOVIE_ONLY=true
+            KEEP_ONE=true
+        elif [[ "$mode_choice" == *Full* ]]; then
+            MOVIE_ONLY=false
+            KEEP_ONE=$orig_keep_one
+        fi
+
+        # ── Output format (Folder vs ISO) ──
+        local iso_option_default="Folder (BDMV)"
+        $OUTPUT_ISO && iso_option_default="ISO (.iso file)"
+
+        local iso_option_choice=$(print -l \
+                "Folder (BDMV)" \
+                "ISO (.iso file)" \
+            | gum choose --limit=1 --height=2 \
+                --header="OUTPUT FORMAT" --selected="$iso_option_default" || true)
+
+        if [[ "$iso_option_choice" == *ISO* ]]; then
+            OUTPUT_ISO=true
+        elif [[ "$iso_option_choice" == *Folder* ]]; then
+            OUTPUT_ISO=false
+        fi
+
+        # ── Encoding options ──
+        local preset_default="$MAIN_PRESET"
+
+        local preset_choice=$(print -l \
+                "slow" "medium" "fast" "slower" "veryslow" \
+            | gum choose --limit=1 --height=5 \
+                --header="ENCODING PRESET" --selected="$preset_default" || true)
+        if [[ -n "$preset_choice" ]]; then
+            MAIN_PRESET="$preset_choice"
+        fi
+
+        # ── Additional options ──
+        local opt_labels=() opt_selected=()
+        if [[ -d "$OUTPUT" ]]; then
+            opt_labels+=("Overwrite existing output")
+            $FORCE && opt_selected+=("Overwrite existing output")
+        fi
+
+        if [[ ${#opt_labels[@]} -gt 0 ]]; then
+            local selected_str="${(j:,:)opt_selected}"
+            local choose_flags=(--no-limit --height=${#opt_labels[@]} --header="SELECT OPTIONS")
+            [[ -n "$selected_str" ]] && choose_flags+=(--selected="$selected_str")
+            local chosen=$(print -l "${(@)opt_labels}" \
+                | gum choose "${choose_flags[@]}" || true)
+
+            if [[ -n "$chosen" ]]; then
+                FORCE=false
+                if [[ "$chosen" == *Overwrite* ]]; then FORCE=true; fi
+            fi
+        fi
+
+        # ── Summary ──
+        local source_size
+        if [[ -d "$SOURCE" ]]; then
+            source_size=$(du -sh "$SOURCE" 2>/dev/null | cut -f1)
+        elif [[ -f "$SOURCE" ]]; then
+            source_size=$(du -h "$SOURCE" 2>/dev/null | cut -f1)
+        else
+            source_size="unknown"
+        fi
+
+        local c_movie="${CCTP_RED}"
+        $MOVIE_ONLY && c_movie="${CCTP_GREEN}"
+        local iso_label="Folder"
+        $OUTPUT_ISO && iso_label="ISO"
+
+        gum style --border rounded --padding "1 2" --width 64 \
+            --margin "1 0" --border-foreground "#89b4fa" \
+            "${CCTP_BLUE}${CCTP_BOLD}  ▶ Ready to start${CCTP_RESET}" \
+            "" \
+            "${CCTP_SUBTEXT1}  Source:${CCTP_RESET}      ${CCTP_TEXT}${SOURCE}${CCTP_RESET}" \
+            "${CCTP_SUBTEXT1}  Source size:${CCTP_RESET} ${CCTP_TEXT}${source_size}${CCTP_RESET}" \
+            "${CCTP_SUBTEXT1}  Output:${CCTP_RESET}      ${CCTP_TEXT}${OUTPUT}${CCTP_RESET}" \
+            "${CCTP_SUBTEXT1}  Movie-only:${CCTP_RESET}  ${c_movie}${MOVIE_ONLY}${CCTP_RESET}" \
+            "${CCTP_SUBTEXT1}  Format:${CCTP_RESET}      ${CCTP_TEXT}${iso_label}${CCTP_RESET}" \
+            "${CCTP_SUBTEXT1}  Preset:${CCTP_RESET}      ${CCTP_TEXT}${MAIN_PRESET}${CCTP_RESET}"
+
+        local action=$(gum choose --height=5 \
+            --header="SELECT ACTION" \
+            "Start" "Edit source" "Edit output" "Edit options" "Cancel" || true)
+        case "$action" in
+            Start) break ;;
+            "Edit source") SOURCE=""; continue ;;
+            "Edit output") OUTPUT=""; continue ;;
+            "Edit options") continue ;;
+            *) exit 0 ;;
+        esac
+    done
 }
 
 check_deps() {
@@ -104,10 +343,18 @@ while [[ $# -gt 0 ]]; do
         -f|--force)        FORCE=true; shift ;;
         -n|--dry-run)      DRY_RUN=true; shift ;;
         -w|--work)         WORK_DIR="$2"; shift 2 ;;
+        --tui)             USE_TUI=true; shift ;;
         -h|--help)         usage ;;
         *)                 die "Unknown option: $1" ;;
     esac
 done
+
+# Launch interactive TUI if requested, or if required args are missing and we
+# have an interactive terminal with gum available.
+if $USE_TUI || { [[ -z "$SOURCE" || -z "$OUTPUT" ]] && [[ -t 1 ]] && command -v gum &>/dev/null; }; then
+    USE_TUI=true
+    run_tui
+fi
 
 # --movie-only implies --keep-one (only the first main playlist is encoded)
 if $MOVIE_ONLY; then
@@ -139,6 +386,11 @@ if [[ -z "$WORK_DIR" ]]; then
     WORK_DIR="${OUTPUT}.work"
 fi
 mkdir -p "$WORK_DIR"
+
+# Start logging to file while still printing to terminal
+mkdir -p "$LOG_DIR"
+exec > >(tee -a "$LOG_FILE") 2>&1
+log "Logging to $LOG_FILE"
 
 # Detect BD-J
 HAS_BDJ=false
