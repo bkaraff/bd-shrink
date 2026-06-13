@@ -213,17 +213,32 @@ run_tui() {
         source_size="unknown"
     fi
 
-    gum style --border rounded --padding "1 2" --width 60 \
-        --margin "1 0" --foreground 99 \
-        "  Source:      $SOURCE" \
-        "  Source size: $source_size" \
-        "  Output:      $OUTPUT" \
-        "  Movie-only:  $MOVIE_ONLY" \
-        "  ISO:         $OUTPUT_ISO" \
-        "  Preset:      $MAIN_PRESET" \
-        "  Target:      ${TARGET_GB} GB"
+    # ANSI color codes for inline styling inside the gum box
+    local c_reset=$'\e[0m'
+    local c_header=$'\e[1;38;5;212m'
+    local c_label=$'\e[38;5;250m'
+    local c_value=$'\e[38;5;255m'
+    local c_true=$'\e[38;5;82m'
+    local c_false=$'\e[38;5;245m'
+    local c_movie c_iso
+    $MOVIE_ONLY && c_movie="$c_true" || c_movie="$c_false"
+    $OUTPUT_ISO && c_iso="$c_true" || c_iso="$c_false"
 
-    gum confirm --default=true "Start processing?" || exit 0
+    gum style --border rounded --padding "1 2" --width 64 \
+        --margin "1 0" --border-foreground 212 \
+        "${c_header}  ▶ Ready to start${c_reset}" \
+        "" \
+        "${c_label}  Source:${c_reset}      ${c_value}${SOURCE}${c_reset}" \
+        "${c_label}  Source size:${c_reset} ${c_value}${source_size}${c_reset}" \
+        "${c_label}  Output:${c_reset}      ${c_value}${OUTPUT}${c_reset}" \
+        "${c_label}  Movie-only:${c_reset}  ${c_movie}${MOVIE_ONLY}${c_reset}" \
+        "${c_label}  ISO:${c_reset}         ${c_iso}${OUTPUT_ISO}${c_reset}" \
+        "${c_label}  Preset:${c_reset}      ${c_value}${MAIN_PRESET}${c_reset}" \
+        "${c_label}  Target:${c_reset}      ${c_value}${TARGET_GB} GB${c_reset}"
+
+    gum confirm --default=true --prompt.foreground 212 \
+        --affirmative "Start" --negative "Cancel" \
+        "Begin processing?" || exit 0
 }
 
 check_deps() {
