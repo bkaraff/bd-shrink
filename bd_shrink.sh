@@ -109,81 +109,78 @@ run_tui() {
         --border-foreground "#89b4fa" --foreground "#cdd6f4" \
         "bd_shrink" "" "Shrink BD50 → BD25"
 
-    # ── Source root ──
-    if [[ -n "$SOURCE_ROOT" ]]; then
-        gum style --foreground "#7f849c" "Source root: ${SOURCE_ROOT}"
-    else
-        local start_dir="${HOME}"
-        [[ -d "$PWD" ]] && start_dir="$PWD"
-        [[ -d /data-nvme1 ]] && start_dir="/data-nvme1"
-        SOURCE_ROOT=$(gum file --directory --cursor="▸ " "$start_dir" \
-            --header="Select source root — ↑↓ move, → enter dir, ← go up, enter select") || exit 1
-        mkdir -p "$CONFIG_DIR"
-        printf '%s\n' "$SOURCE_ROOT" > "$SOURCE_ROOT_FILE"
-    fi
-
     # ── Source selection ──
     if [[ -z "$SOURCE" ]]; then
         gum style --foreground "#89b4fa" --bold "Select source"
-        # Collect candidates under SOURCE_ROOT: directories and video files
-        local dirs=("$SOURCE_ROOT"/*(/N) "$SOURCE_ROOT"/*.mkv(N) "$SOURCE_ROOT"/*.m2ts(N) "$SOURCE_ROOT"/*.ts(N))
-        if [[ -f "$SOURCE_ROOT/index.bdmv" ]]; then
-            SOURCE="$SOURCE_ROOT"
-        elif [[ ${#dirs[@]} -eq 0 ]]; then
-            # Empty root or leaf: fall back to file browser
-            SOURCE=$(gum file --directory --cursor="▸ " "$SOURCE_ROOT" \
-                --header="Select source folder — ↑↓ move, → enter dir, ← go up, enter select") || exit 1
-        else
-            # Build clean names for display, keep full paths for lookup
-            typeset -a names paths
-            typeset browse_label="[ Open file browser ]"
-            for d in "${dirs[@]}"; do
-                names+=("${d##*/}")
-                paths+=("$d")
-            done
-            names+=("$browse_label")
-            paths+=("__BROWSE__")
+        gum style --foreground "#cdd6f4" \
+            "Choose the movie folder that contains the BDMV directory or video/ISO file."
+        gum confirm --default=true --prompt.foreground "#89b4fa" \
+            --affirmative "Continue" --negative "Exit" \
+            "Continue to source selection?" || exit 0
 
-            local choice
-            choice=$(print -l "${(@)names}" \
-                | gum filter --placeholder "Search or select [ Open file browser ]" || true)
-
-            # If filter returned empty (user pressed escape), fall back to file browser
-            if [[ -z "$choice" ]]; then
-                choice="$browse_label"
-            fi
-
-            # Map display name back to full path
-            local idx picked
-            for ((idx=1; idx <= ${#names[@]}; idx++)); do
-                if [[ "${names[$idx]}" == "$choice" ]]; then
-                    picked="${paths[$idx]}"
-                    break
+        # If SOURCE_ROOT is saved, offer a fuzzy list of its contents first.
+        local selected=""
+        if [[ -n "$SOURCE_ROOT" ]] && [[ -d "$SOURCE_ROOT" ]]; then
+            gum style --foreground "#7f849c" "Looking in: ${SOURCE_ROOT}"
+            local dirs=("$SOURCE_ROOT"/*(/N) "$SOURCE_ROOT"/*.mkv(N) "$SOURCE_ROOT"/*.m2ts(N) "$SOURCE_ROOT"/*.ts(N) "$SOURCE_ROOT"/*.iso(N))
+            if [[ ${#dirs[@]} -gt 0 ]]; then
+                typeset -a names
+                for d in "${dirs[@]}"; do names+=("${d##*/}"); done
+                local choice=$(print -l "${(@)names}" \
+                    | gum filter --header="SELECT SOURCE" --placeholder "Search sources (esc = browse file system)..." || true)
+                if [[ -n "$choice" ]]; then
+                    selected="$SOURCE_ROOT/$choice"
                 fi
-            done
-
-            if [[ "$picked" == "__BROWSE__" ]]; then
-                SOURCE=$(gum file --directory --cursor="▸ " "$SOURCE_ROOT" \
-                    --header="Select source folder — ↑↓ move, → enter dir, ← go up, enter select") || exit 1
-            elif [[ -d "$picked" ]]; then
-                SOURCE="$picked"
-            else
-                SOURCE="$picked"
-                MOVIE_ONLY=true  # video file forces movie-only
             fi
         fi
 
-        # Auto-detect BDMV subfolder
-        if [[ -n "$SOURCE" ]] && [[ -d "$SOURCE" ]] && [[ ! -f "$SOURCE/index.bdmv" ]]; then
-            if [[ -f "$SOURCE/BDMV/index.bdmv" ]]; then
-                SOURCE="$SOURCE/BDMV"
-            else
-                typeset -a found_bdmv
-                found_bdmv=("$SOURCE"/*/BDMV(N))
-                if [[ -n "${found_bdmv[1]:-}" ]] && [[ -f "${found_bdmv[1]}/index.bdmv" ]]; then
-                    SOURCE="${found_bdmv[1]}"
-                fi
+        # Fall back to the file browser.
+        if [[ -z "$selected" ]]; then
+            local start_dir="$SOURCE_ROOT"
+            [[ -z "$start_dir" ]] && start_dir="/data-nvme1"
+            [[ -z "$start_dir" ]] && start_dir="${HOME}"
+            selected=$(gum file --directory --cursor="▸ " "$start_dir" \
+                --header="SELECT SOURCE from ${start_dir} — ↑↓ move, → enter dir, ← go up, enter select") || exit 1
+        fi
+
+        # Detect the actual source inside the selected movie folder.
+        local movie_folder=""
+        if [[ -f "$selected/index.bdmv" ]]; then
+            SOURCE="$selected"
+            movie_folder="${selected:h}"
+        elif [[ -f "$selected/BDMV/index.bdmv" ]]; then
+            SOURCE="$selected/BDMV"
+            movie_folder="$selected"
+        elif [[ -f "$selected" ]]; then
+            SOURCE="$selected"
+            movie_folder="${selected:h}"
+            MOVIE_ONLY=true
+        else
+            typeset -a found_bdmv
+            found_bdmv=("$selected"/*/BDMV(N))
+            if [[ -n "${found_bdmv[1]:-}" ]] && [[ -f "${found_bdmv[1]}/index.bdmv" ]]; then
+                SOURCE="${found_bdmv[1]}"
+                movie_folder="${found_bdmv[1]:h}"
             fi
+        fi
+
+        # If no BDMV, look for a video/ISO file directly inside the selected folder.
+        if [[ -z "$SOURCE" ]]; then
+            local videos=("$selected"/*.mkv(N) "$selected"/*.m2ts(N) "$selected"/*.ts(N) "$selected"/*.iso(N))
+            if [[ -n "${videos[1]:-}" ]]; then
+                SOURCE="${videos[1]}"
+                movie_folder="$selected"
+                MOVIE_ONLY=true
+            fi
+        fi
+
+        [[ -z "$SOURCE" ]] && die "No BDMV folder or video file found under $selected"
+
+        # Remember the parent of the movie folder as SOURCE_ROOT.
+        if [[ -n "$movie_folder" ]]; then
+            SOURCE_ROOT="${movie_folder:h}"
+            mkdir -p "$CONFIG_DIR"
+            printf '%s\n' "$SOURCE_ROOT" > "$SOURCE_ROOT_FILE"
         fi
     fi
 
