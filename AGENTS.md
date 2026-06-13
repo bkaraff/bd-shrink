@@ -158,3 +158,13 @@ Movie-only mode allocates ALL space to video. Audio + subtitle + tsMuxeR contain
 - `systemd-run` is **required** for both the shell `run_ff` function and pre-compute phase. It is listed in `check_deps` indirectly (via `run_ff` shell function) but not explicitly. If systemd user services aren't available, the script will fail at runtime.
 - In zsh, `local` outside a function behaves like a regular assignment. The surgical rebuild block uses `local` at top-level (lines 1594, 1595, 1611) — this is safe but non-idiomatic.
 - **Pass 2 encoding validation**: After pass 2, the script validates `.h264` output by checking for an Annex B start code (`\x00\x00\x00` or `\x00\x00\x01`) in the first bytes. Corrupt files (e.g. from VC-1 decode failures) are removed so they don't reach tsMuxeR. Previously, the retry loop accepted any non-empty file, which caused tsMuxeR `Unsupported codec` errors.
+
+## Future goals
+
+### Dependency auto-install
+
+Add a `--install-deps` flag that detects the distro (dnf/apt/pacman/brew), prompts for sudo if needed, and installs missing tools (ffmpeg, tsMuxeR, bc, python3, gum). This would let new users get running with a single command.
+
+### Burn-to-disk (`--burn`)
+
+Add a flag to burn the output directly to BD-R after the rebuild phase. Uses `xorriso` (Linux) or `cdrecord`/`growisofs` to write the BDMV folder or ISO to `/dev/srX`. Requires a BD-R drive — needs testing before implementation.
