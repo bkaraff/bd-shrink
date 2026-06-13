@@ -41,7 +41,10 @@ usage() {
     cat <<EOF
 bd_shrink.sh v${VERSION} — shrink BD50 → BD25 with menu preservation
 
-Usage:  bd_shrink.sh -s <source> -o <output> [options]
+Usage:  bd_shrink.sh [-s <source> -o <output>] [options]
+
+When source/output are omitted and gum is available, an interactive TUI
+is launched automatically. Pass --tui to force TUI mode even with args.
 
 Required:
   -s, --source DIR|FILE   Source BDMV folder (must contain index.bdmv) or .mkv file
@@ -185,8 +188,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Launch interactive TUI if requested
-if $USE_TUI; then
+# Launch interactive TUI if requested, or if required args are missing and we
+# have an interactive terminal with gum available.
+if $USE_TUI || { [[ -z "$SOURCE" || -z "$OUTPUT" ]] && [[ -t 1 ]] && command -v gum &>/dev/null; }; then
+    USE_TUI=true
     run_tui
 fi
 
