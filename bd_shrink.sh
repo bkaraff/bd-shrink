@@ -23,6 +23,24 @@ OUTPUT_ISO=false
 COMMENTARY_AUDIO_BITRATE="128k"
 USE_TUI=false
 
+# ─── config / logging / source-root defaults ─────────────────────────────────
+# Source root for TUI file browser persistence.
+# Can be seeded via environment variable or saved to ~/.config/bd-shrink/source_root.
+SOURCE_ROOT="${SOURCE_ROOT:-}"
+CONFIG_DIR="${HOME}/.config/bd-shrink"
+SOURCE_ROOT_FILE="${CONFIG_DIR}/source_root"
+[[ -f "$SOURCE_ROOT_FILE" ]] && SOURCE_ROOT=$(<"$SOURCE_ROOT_FILE")
+
+# Default log directory: /var/log/bd-shrink if writable without root,
+# otherwise fall back to ~/.local/share/bd-shrink/logs.
+if mkdir -p /var/log/bd-shrink 2>/dev/null && [[ -w /var/log/bd-shrink ]]; then
+    LOG_DIR="/var/log/bd-shrink"
+else
+    LOG_DIR="${HOME}/.local/share/bd-shrink/logs"
+    mkdir -p "$LOG_DIR"
+fi
+LOG_FILE="${LOG_DIR}/bd_shrink_$(date +%Y%m%d_%H%M%S).log"
+
 # ─── helpers ─────────────────────────────────────────────────────────────────
 die()  { echo "ERROR: $*" >&2; exit 1; }
 warn() { echo "WARN:  $*" >&2; }
@@ -78,16 +96,50 @@ run_tui() {
     gum style --border double --align center --width 60 --padding "1 2" \
         --foreground 212 "bd_shrink" "" "Shrink BD50 → BD25"
 
-    # Source
-    if [[ -z "$SOURCE" ]]; then
+    # Source root (persistent across runs)
+    if [[ -z "$SOURCE_ROOT" ]]; then
         local start_dir="${HOME}"
         [[ -d "$PWD" ]] && start_dir="$PWD"
         [[ -d /data-nvme1 ]] && start_dir="/data-nvme1"
+        SOURCE_ROOT=$(gum file --directory --cursor="▸ " "$start_dir" \
+            --header="Select your source folder root (will be remembered)") || exit 1
+        mkdir -p "$CONFIG_DIR"
+        printf '%s\n' "$SOURCE_ROOT" > "$SOURCE_ROOT_FILE"
+    fi
+
+    # Source selection
+    if [[ -z "$SOURCE" ]]; then
         if gum confirm --default=false --prompt.foreground="240" \
                 "Is the source an .mkv file?"; then
-            SOURCE=$(gum file --file --cursor="▸ " "$start_dir") || exit 1
+            SOURCE=$(gum file --file --cursor="▸ " "$SOURCE_ROOT") || exit 1
         else
-            SOURCE=$(gum file --directory --cursor="▸ " "$start_dir") || exit 1
+            while true; do
+                local selected
+                selected=$(gum file --directory --cursor="▸ " "$SOURCE_ROOT" \
+                    --header="Select source folder under ${SOURCE_ROOT}") || exit 1
+
+                # Direct BDMV selection
+                if [[ -f "$selected/index.bdmv" ]]; then
+                    SOURCE="$selected"
+                    break
+                fi
+
+                # Parent contains BDMV subfolder
+                if [[ -f "$selected/BDMV/index.bdmv" ]]; then
+                    SOURCE="$selected/BDMV"
+                    break
+                fi
+
+                # Search one level deeper for BDMV
+                local bdmv_candidates=("$selected"/*/BDMV(N))
+                if [[ -n "${bdmv_candidates[1]:-}" ]] && [[ -f "${bdmv_candidates[1]}/index.bdmv" ]]; then
+                    SOURCE="${bdmv_candidates[1]}"
+                    break
+                fi
+
+                warn "No BDMV folder found under $selected"
+                gum confirm --default=true "Try again?" || exit 1
+            done
         fi
     fi
 
@@ -225,6 +277,11 @@ if [[ -z "$WORK_DIR" ]]; then
     WORK_DIR="${OUTPUT}.work"
 fi
 mkdir -p "$WORK_DIR"
+
+# Start logging to file while still printing to terminal
+mkdir -p "$LOG_DIR"
+exec > >(tee -a "$LOG_FILE") 2>&1
+log "Logging to $LOG_FILE"
 
 # Detect BD-J
 HAS_BDJ=false

@@ -2,7 +2,7 @@
 
 ## Project overview
 
-Single-file **zsh** script (~1486 lines) that shrinks BD50 Blu-ray backups or MKV files to BD25-compatible BDMV folders. The `-s` flag accepts BDMV folders or **.mkv files** (MKV forces movie-only mode). Built-in Python heredocs handle MPLS binary parsing, MKV demuxing, and data processing. Output is authored with `tsMuxeR`.
+Single-file **zsh** script (~1630 lines) that shrinks BD50 Blu-ray backups or MKV files to BD25-compatible BDMV folders. The `-s` flag accepts BDMV folders or **.mkv files** (MKV forces movie-only mode). Built-in Python heredocs handle MPLS binary parsing, MKV demuxing, and data processing. Output is authored with `tsMuxeR`.
 
 ## Key commands
 
@@ -24,6 +24,23 @@ zsh -n bd_shrink.sh
 ```
 
 Note: `--iso` works with any mode (surgical and movie-only), not just `--movie-only`.
+
+## TUI mode
+
+When run without `-s`/`-o` in an interactive terminal with `gum` installed, the script launches an interactive TUI instead of erroring. Pass `--tui` to force TUI mode even when args are provided.
+
+In TUI mode:
+- **Source root** (`SOURCE_ROOT`) is prompted once and persisted to `~/.config/bd-shrink/source_root`. On subsequent runs the TUI starts directly in that folder.
+- **Source selection** browses under `SOURCE_ROOT`. If the selected folder is not a BDMV folder, the script looks for `BDMV/index.bdmv` one level down.
+- All other options (output, movie-only, ISO, preset, target size) are prompted interactively.
+
+## Logging
+
+All output is mirrored to a log file. Default log directory:
+- `/var/log/bd-shrink` if writable without root
+- Otherwise `~/.local/share/bd-shrink/logs`
+
+Log files are named `bd_shrink_YYYYMMDD_HHMMSS.log`.
 
 ## Git workflow
 
