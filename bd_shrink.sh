@@ -105,146 +105,204 @@ EOF
 run_tui() {
     command -v gum &>/dev/null || die "gum is required for --tui mode (https://github.com/charmbracelet/gum)"
 
-    clear
+    local orig_keep_one=$KEEP_ONE
 
-    gum style --border double --align center --width 60 --padding "1 2" \
-        --border-foreground "#89b4fa" --foreground "#cdd6f4" \
-        "bd_shrink" "" "Shrink BD50 → BD25"
+    while true; do
+        clear
 
-    # ── Source selection ──
-    if [[ -z "$SOURCE" ]]; then
-        gum style --foreground "#89b4fa" --bold "Select source"
-        gum style --foreground "#cdd6f4" \
-            "Choose the movie folder that contains the BDMV directory or video/ISO file."
-        gum confirm --default=true --prompt.foreground "#89b4fa" \
-            --affirmative "Continue" --negative "Exit" \
-            "Continue to source selection?" || exit 0
+        gum style --border double --align center --width 60 --padding "1 2" \
+            --border-foreground "#89b4fa" --foreground "#cdd6f4" \
+            "bd_shrink" "" "Shrink BD50 → BD25"
+        # ── Source selection ──
+        if [[ -z "$SOURCE" ]]; then
+            gum style --foreground "#89b4fa" --bold "Select source"
+            gum style --foreground "#cdd6f4" \
+                "Choose the movie folder that contains the BDMV directory or video/ISO file."
+            gum confirm --default=true --prompt.foreground "#89b4fa" \
+                --affirmative "Continue" --negative "Exit" \
+                "Continue to source selection?" || exit 0
 
-        # If SOURCE_ROOT is saved, offer a fuzzy list of its contents first.
-        local selected=""
-        if [[ -n "$SOURCE_ROOT" ]] && [[ -d "$SOURCE_ROOT" ]]; then
-            gum style --foreground "#7f849c" "Looking in: ${SOURCE_ROOT}"
-            local dirs=("$SOURCE_ROOT"/*(/N) "$SOURCE_ROOT"/*.mkv(N) "$SOURCE_ROOT"/*.m2ts(N) "$SOURCE_ROOT"/*.ts(N) "$SOURCE_ROOT"/*.iso(N))
-            if [[ ${#dirs[@]} -gt 0 ]]; then
-                typeset -a names
-                for d in "${dirs[@]}"; do names+=("${d##*/}"); done
-                local choice=$(print -l "${(@)names}" \
-                    | gum filter --header="SELECT SOURCE" --placeholder "Search sources (esc = browse file system)..." || true)
-                if [[ -n "$choice" ]]; then
-                    selected="$SOURCE_ROOT/$choice"
+            # If SOURCE_ROOT is saved, offer a fuzzy list of its contents first.
+            local selected=""
+            if [[ -n "$SOURCE_ROOT" ]] && [[ -d "$SOURCE_ROOT" ]]; then
+                gum style --foreground "#7f849c" "Looking in: ${SOURCE_ROOT}"
+                local dirs=("$SOURCE_ROOT"/*(/N) "$SOURCE_ROOT"/*.mkv(N) "$SOURCE_ROOT"/*.m2ts(N) "$SOURCE_ROOT"/*.ts(N) "$SOURCE_ROOT"/*.iso(N))
+                if [[ ${#dirs[@]} -gt 0 ]]; then
+                    typeset -a names
+                    for d in "${dirs[@]}"; do names+=("${d##*/}"); done
+                    local choice=$(print -l "${(@)names}" \
+                        | gum filter --header="SELECT SOURCE" --placeholder "Search sources (esc = browse file system)..." || true)
+                    if [[ -n "$choice" ]]; then
+                        selected="$SOURCE_ROOT/$choice"
+                    fi
                 fi
             fi
-        fi
 
-        # Fall back to the file browser.
-        if [[ -z "$selected" ]]; then
-            local start_dir="$SOURCE_ROOT"
-            [[ -z "$start_dir" ]] && start_dir="/data-nvme1"
-            [[ -z "$start_dir" ]] && start_dir="${HOME}"
-            selected=$(gum file --directory --cursor="▸ " "$start_dir" \
-                --header="SELECT SOURCE from ${start_dir} — ↑↓ move, → enter dir, ← go up, enter select") || exit 1
-        fi
-
-        # Detect the actual source inside the selected movie folder.
-        local movie_folder=""
-        if [[ -f "$selected/index.bdmv" ]]; then
-            SOURCE="$selected"
-            movie_folder="${selected:h}"
-        elif [[ -f "$selected/BDMV/index.bdmv" ]]; then
-            SOURCE="$selected/BDMV"
-            movie_folder="$selected"
-        elif [[ -f "$selected" ]]; then
-            SOURCE="$selected"
-            movie_folder="${selected:h}"
-            MOVIE_ONLY=true
-        else
-            typeset -a found_bdmv
-            found_bdmv=("$selected"/*/BDMV(N))
-            if [[ -n "${found_bdmv[1]:-}" ]] && [[ -f "${found_bdmv[1]}/index.bdmv" ]]; then
-                SOURCE="${found_bdmv[1]}"
-                movie_folder="${found_bdmv[1]:h}"
+            # Fall back to the file browser.
+            if [[ -z "$selected" ]]; then
+                local start_dir="$SOURCE_ROOT"
+                [[ -z "$start_dir" ]] && start_dir="/data-nvme1"
+                [[ -z "$start_dir" ]] && start_dir="${HOME}"
+                selected=$(gum file --directory --cursor="▸ " "$start_dir" \
+                    --header="SELECT SOURCE from ${start_dir} — ↑↓ move, → enter dir, ← go up, enter select") || exit 1
             fi
-        fi
 
-        # If no BDMV, look for a video/ISO file directly inside the selected folder.
-        if [[ -z "$SOURCE" ]]; then
-            local videos=("$selected"/*.mkv(N) "$selected"/*.m2ts(N) "$selected"/*.ts(N) "$selected"/*.iso(N))
-            if [[ -n "${videos[1]:-}" ]]; then
-                SOURCE="${videos[1]}"
+            # Detect the actual source inside the selected movie folder.
+            local movie_folder=""
+            if [[ -f "$selected/index.bdmv" ]]; then
+                SOURCE="$selected"
+                movie_folder="${selected:h}"
+            elif [[ -f "$selected/BDMV/index.bdmv" ]]; then
+                SOURCE="$selected/BDMV"
                 movie_folder="$selected"
+            elif [[ -f "$selected" ]]; then
+                SOURCE="$selected"
+                movie_folder="${selected:h}"
                 MOVIE_ONLY=true
+            else
+                typeset -a found_bdmv
+                found_bdmv=("$selected"/*/BDMV(N))
+                if [[ -n "${found_bdmv[1]:-}" ]] && [[ -f "${found_bdmv[1]}/index.bdmv" ]]; then
+                    SOURCE="${found_bdmv[1]}"
+                    movie_folder="${found_bdmv[1]:h}"
+                fi
+            fi
+
+            # If no BDMV, look for a video/ISO file directly inside the selected folder.
+            if [[ -z "$SOURCE" ]]; then
+                local videos=("$selected"/*.mkv(N) "$selected"/*.m2ts(N) "$selected"/*.ts(N) "$selected"/*.iso(N))
+                if [[ -n "${videos[1]:-}" ]]; then
+                    SOURCE="${videos[1]}"
+                    movie_folder="$selected"
+                    MOVIE_ONLY=true
+                fi
+            fi
+
+            [[ -z "$SOURCE" ]] && die "No BDMV folder or video file found under $selected"
+
+            # Remember the parent of the movie folder as SOURCE_ROOT.
+            if [[ -n "$movie_folder" ]]; then
+                SOURCE_ROOT="${movie_folder:h}"
+                mkdir -p "$CONFIG_DIR"
+                printf '%s\n' "$SOURCE_ROOT" > "$SOURCE_ROOT_FILE"
             fi
         fi
 
-        [[ -z "$SOURCE" ]] && die "No BDMV folder or video file found under $selected"
-
-        # Remember the parent of the movie folder as SOURCE_ROOT.
-        if [[ -n "$movie_folder" ]]; then
-            SOURCE_ROOT="${movie_folder:h}"
-            mkdir -p "$CONFIG_DIR"
-            printf '%s\n' "$SOURCE_ROOT" > "$SOURCE_ROOT_FILE"
+        # ── Output ──
+        if [[ -z "$OUTPUT" ]]; then
+            local default_out
+            if [[ -d "$SOURCE" ]]; then
+                default_out="${SOURCE%/BDMV}.bd25"
+                default_out="${default_out%/}.bd25"
+            else
+                default_out="${SOURCE%.*}.bd25"
+            fi
+            OUTPUT=$(gum input --placeholder "$default_out" --prompt "Output: ") || exit 1
+            [[ -z "$OUTPUT" ]] && OUTPUT="$default_out"
         fi
-    fi
 
-    # ── Output ──
-    if [[ -z "$OUTPUT" ]]; then
-        local default_out
+        # ── Mode (Full disc vs Movie-only) ──
+        local mode_default="Full disc (keep menus, extras)"
+        $MOVIE_ONLY && mode_default="Movie-only (no menus, fresh BD)"
+
+        local mode_choice=$(print -l \
+                "Full disc (keep menus, extras)" \
+                "Movie-only (no menus, fresh BD)" \
+            | gum choose --limit=1 --height=2 \
+                --header="SELECT MODE" --selected="$mode_default" || true)
+
+        if [[ "$mode_choice" == *Movie-only* ]]; then
+            MOVIE_ONLY=true
+            KEEP_ONE=true
+        elif [[ "$mode_choice" == *Full* ]]; then
+            MOVIE_ONLY=false
+            KEEP_ONE=$orig_keep_one
+        fi
+
+        # ── Output format (Folder vs ISO) ──
+        local iso_option_default="Folder (BDMV)"
+        $OUTPUT_ISO && iso_option_default="ISO (.iso file)"
+
+        local iso_option_choice=$(print -l \
+                "Folder (BDMV)" \
+                "ISO (.iso file)" \
+            | gum choose --limit=1 --height=2 \
+                --header="OUTPUT FORMAT" --selected="$iso_option_default" || true)
+
+        if [[ "$iso_option_choice" == *ISO* ]]; then
+            OUTPUT_ISO=true
+        elif [[ "$iso_option_choice" == *Folder* ]]; then
+            OUTPUT_ISO=false
+        fi
+
+        # ── Encoding options ──
+        local preset_default="$MAIN_PRESET"
+
+        local preset_choice=$(print -l \
+                "slow" "medium" "fast" "slower" "veryslow" \
+            | gum choose --limit=1 --height=5 \
+                --header="ENCODING PRESET" --selected="$preset_default" || true)
+        if [[ -n "$preset_choice" ]]; then
+            MAIN_PRESET="$preset_choice"
+        fi
+
+        # ── Additional options ──
+        local opt_labels=() opt_selected=()
+        if [[ -d "$OUTPUT" ]]; then
+            opt_labels+=("Overwrite existing output")
+            $FORCE && opt_selected+=("Overwrite existing output")
+        fi
+
+        if [[ ${#opt_labels[@]} -gt 0 ]]; then
+            local selected_str="${(j:,:)opt_selected}"
+            local choose_flags=(--no-limit --height=${#opt_labels[@]} --header="SELECT OPTIONS")
+            [[ -n "$selected_str" ]] && choose_flags+=(--selected="$selected_str")
+            local chosen=$(print -l "${(@)opt_labels}" \
+                | gum choose "${choose_flags[@]}" || true)
+
+            if [[ -n "$chosen" ]]; then
+                FORCE=false
+                if [[ "$chosen" == *Overwrite* ]]; then FORCE=true; fi
+            fi
+        fi
+
+        # ── Summary ──
+        local source_size
         if [[ -d "$SOURCE" ]]; then
-            default_out="${SOURCE%/BDMV}.bd25"
-            default_out="${default_out%/}.bd25"
+            source_size=$(du -sh "$SOURCE" 2>/dev/null | cut -f1)
+        elif [[ -f "$SOURCE" ]]; then
+            source_size=$(du -h "$SOURCE" 2>/dev/null | cut -f1)
         else
-            default_out="${SOURCE%.*}.bd25"
+            source_size="unknown"
         fi
-        OUTPUT=$(gum input --placeholder "$default_out" --prompt "Output: ") || exit 1
-        [[ -z "$OUTPUT" ]] && OUTPUT="$default_out"
-    fi
 
-    # ── Options ──
-    if ! $MOVIE_ONLY || ! $OUTPUT_ISO || ([[ -d "$OUTPUT" ]] && ! $FORCE); then
-        gum style --foreground "#89b4fa" --bold "Options"
-        typeset -a opt_labels
-        ! $MOVIE_ONLY && opt_labels+=("Movie-only (no menus/extras)")
-        ! $OUTPUT_ISO && opt_labels+=("Output ISO")
-        [[ -d "$OUTPUT" ]] && ! $FORCE && opt_labels+=("Overwrite existing output")
+        local c_movie="${CCTP_RED}"
+        $MOVIE_ONLY && c_movie="${CCTP_GREEN}"
+        local iso_label="Folder"
+        $OUTPUT_ISO && iso_label="ISO"
 
-        local chosen=$(print -l "${(@)opt_labels}" \
-            | gum choose --no-limit --height=${#opt_labels[@]} || true)
-        # Match by substrings to avoid word-splitting issues
-        if [[ "$chosen" == *Movie-only* ]]; then MOVIE_ONLY=true; KEEP_ONE=true; fi
-        if [[ "$chosen" == *ISO* ]]; then OUTPUT_ISO=true; fi
-        if [[ "$chosen" == *Overwrite* ]]; then FORCE=true; fi
-    fi
+        gum style --border rounded --padding "1 2" --width 64 \
+            --margin "1 0" --border-foreground "#89b4fa" \
+            "${CCTP_BLUE}${CCTP_BOLD}  ▶ Ready to start${CCTP_RESET}" \
+            "" \
+            "${CCTP_SUBTEXT1}  Source:${CCTP_RESET}      ${CCTP_TEXT}${SOURCE}${CCTP_RESET}" \
+            "${CCTP_SUBTEXT1}  Source size:${CCTP_RESET} ${CCTP_TEXT}${source_size}${CCTP_RESET}" \
+            "${CCTP_SUBTEXT1}  Output:${CCTP_RESET}      ${CCTP_TEXT}${OUTPUT}${CCTP_RESET}" \
+            "${CCTP_SUBTEXT1}  Movie-only:${CCTP_RESET}  ${c_movie}${MOVIE_ONLY}${CCTP_RESET}" \
+            "${CCTP_SUBTEXT1}  Format:${CCTP_RESET}      ${CCTP_TEXT}${iso_label}${CCTP_RESET}" \
+            "${CCTP_SUBTEXT1}  Preset:${CCTP_RESET}      ${CCTP_TEXT}${MAIN_PRESET}${CCTP_RESET}"
 
-    # ── Summary ──
-    local source_size
-    if [[ -d "$SOURCE" ]]; then
-        source_size=$(du -sh "$SOURCE" 2>/dev/null | cut -f1)
-    elif [[ -f "$SOURCE" ]]; then
-        source_size=$(du -h "$SOURCE" 2>/dev/null | cut -f1)
-    else
-        source_size="unknown"
-    fi
-
-    local c_movie="${CCTP_RED}"
-    $MOVIE_ONLY && c_movie="${CCTP_GREEN}"
-    local c_iso="${CCTP_RED}"
-    $OUTPUT_ISO && c_iso="${CCTP_GREEN}"
-
-    gum style --border rounded --padding "1 2" --width 64 \
-        --margin "1 0" --border-foreground "#89b4fa" \
-        "${CCTP_BLUE}${CCTP_BOLD-}  ▶ Ready to start${CCTP_RESET}" \
-        "" \
-        "${CCTP_SUBTEXT1}  Source:${CCTP_RESET}      ${CCTP_TEXT}${SOURCE}${CCTP_RESET}" \
-        "${CCTP_SUBTEXT1}  Source size:${CCTP_RESET} ${CCTP_TEXT}${source_size}${CCTP_RESET}" \
-        "${CCTP_SUBTEXT1}  Output:${CCTP_RESET}      ${CCTP_TEXT}${OUTPUT}${CCTP_RESET}" \
-        "${CCTP_SUBTEXT1}  Movie-only:${CCTP_RESET}  ${c_movie}${MOVIE_ONLY}${CCTP_RESET}" \
-        "${CCTP_SUBTEXT1}  ISO:${CCTP_RESET}         ${c_iso}${OUTPUT_ISO}${CCTP_RESET}" \
-        "${CCTP_SUBTEXT1}  Preset:${CCTP_RESET}      ${CCTP_TEXT}${MAIN_PRESET}${CCTP_RESET}" \
-        "${CCTP_SUBTEXT1}  Target:${CCTP_RESET}      ${CCTP_TEXT}${TARGET_GB} GB${CCTP_RESET}"
-
-    gum confirm --default=true --prompt.foreground "#89b4fa" \
-        --affirmative "Start" --negative "Cancel" \
-        "Begin processing?" || exit 0
+        local action=$(gum choose --height=5 \
+            --header="SELECT ACTION" \
+            "Start" "Edit source" "Edit output" "Edit options" "Cancel" || true)
+        case "$action" in
+            Start) break ;;
+            "Edit source") SOURCE=""; continue ;;
+            "Edit output") OUTPUT=""; continue ;;
+            "Edit options") continue ;;
+            *) exit 0 ;;
+        esac
+    done
 }
 
 check_deps() {
