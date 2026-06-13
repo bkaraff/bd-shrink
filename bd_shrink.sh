@@ -99,11 +99,7 @@ run_tui() {
     # ── Source root ──
     if [[ -n "$SOURCE_ROOT" ]]; then
         gum style --foreground 240 "Source root: ${SOURCE_ROOT}"
-        if gum confirm --default=false "Change source root directory?"; then
-            SOURCE_ROOT=""
-        fi
-    fi
-    if [[ -z "$SOURCE_ROOT" ]]; then
+    else
         local start_dir="${HOME}"
         [[ -d "$PWD" ]] && start_dir="$PWD"
         [[ -d /data-nvme1 ]] && start_dir="/data-nvme1"
@@ -127,38 +123,35 @@ run_tui() {
         else
             # Build clean names for display, keep full paths for lookup
             typeset -a names paths
-            typeset browse_name="  Open file browser..."
             for d in "${dirs[@]}"; do
                 names+=("${d##*/}")
                 paths+=("$d")
             done
-            names+=("$browse_name")
-            paths+=("__BROWSE__")
 
             local choice
             choice=$(print -l "${(@)names}" \
-                | gum filter --placeholder "Search or browse for a source..." || true)
+                | gum filter --placeholder "Search for a source..." || true)
+
+            # If filter returned empty (user pressed escape), fall back to file browser
             if [[ -z "$choice" ]]; then
-                exit 1
-            fi
-
-            # Map display name back to full path
-            local idx picked
-            for ((idx=1; idx <= ${#names[@]}; idx++)); do
-                if [[ "${names[$idx]}" == "$choice" ]]; then
-                    picked="${paths[$idx]}"
-                    break
-                fi
-            done
-
-            if [[ "$picked" == "__BROWSE__" ]]; then
                 SOURCE=$(gum file --directory --cursor="▸ " "$SOURCE_ROOT" \
                     --header="Select source folder") || exit 1
-            elif [[ -d "$picked" ]]; then
-                SOURCE="$picked"
             else
-                SOURCE="$picked"
-                MOVIE_ONLY=true  # video file forces movie-only
+                # Map display name back to full path
+                local idx picked
+                for ((idx=1; idx <= ${#names[@]}; idx++)); do
+                    if [[ "${names[$idx]}" == "$choice" ]]; then
+                        picked="${paths[$idx]}"
+                        break
+                    fi
+                done
+
+                if [[ -d "$picked" ]]; then
+                    SOURCE="$picked"
+                else
+                    SOURCE="$picked"
+                    MOVIE_ONLY=true  # video file forces movie-only
+                fi
             fi
         fi
 
@@ -185,8 +178,7 @@ run_tui() {
         else
             default_out="${SOURCE%.*}.bd25"
         fi
-        gum style --foreground 99 --bold "Output"
-        OUTPUT=$(gum input --placeholder "$default_out" --prompt "Output directory: ") || exit 1
+        OUTPUT=$(gum input --placeholder "$default_out" --prompt "Output: ") || exit 1
         [[ -z "$OUTPUT" ]] && OUTPUT="$default_out"
     fi
 
@@ -207,9 +199,19 @@ run_tui() {
     fi
 
     # ── Summary ──
+    local source_size
+    if [[ -d "$SOURCE" ]]; then
+        source_size=$(du -sh "$SOURCE" 2>/dev/null | cut -f1)
+    elif [[ -f "$SOURCE" ]]; then
+        source_size=$(du -h "$SOURCE" 2>/dev/null | cut -f1)
+    else
+        source_size="unknown"
+    fi
+
     gum style --border rounded --padding "1 2" --width 60 \
         --margin "1 0" --foreground 99 \
         "  Source:      $SOURCE" \
+        "  Source size: $source_size" \
         "  Output:      $OUTPUT" \
         "  Movie-only:  $MOVIE_ONLY" \
         "  ISO:         $OUTPUT_ISO" \
