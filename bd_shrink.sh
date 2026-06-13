@@ -105,6 +105,8 @@ EOF
 run_tui() {
     command -v gum &>/dev/null || die "gum is required for --tui mode (https://github.com/charmbracelet/gum)"
 
+    clear
+
     gum style --border double --align center --width 60 --padding "1 2" \
         --border-foreground "#89b4fa" --foreground "#cdd6f4" \
         "bd_shrink" "" "Shrink BD50 → BD25"
