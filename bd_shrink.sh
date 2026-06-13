@@ -21,6 +21,7 @@ KEEP_ONE=false
 MOVIE_ONLY=false
 OUTPUT_ISO=false
 COMMENTARY_AUDIO_BITRATE="128k"
+USE_TUI=false
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
 die()  { echo "ERROR: $*" >&2; exit 1; }
@@ -61,9 +62,83 @@ Options:
   -f, --force            Overwrite output directory if it exists
   -n, --dry-run          Show what would be done without encoding
   -w, --work DIR         Working directory (default: <output>.work)
+      --tui              Interactive TUI mode (requires gum)
   -h, --help             Show this help
 EOF
     exit 1
+}
+
+# Interactive TUI mode using charmbracelet/gum
+run_tui() {
+    command -v gum &>/dev/null || die "gum is required for --tui mode (https://github.com/charmbracelet/gum)"
+
+    gum style --border double --align center --width 60 --padding "1 2" \
+        --foreground 212 "bd_shrink" "" "Shrink BD50 → BD25"
+
+    # Source
+    if [[ -z "$SOURCE" ]]; then
+        local start_dir="${HOME}"
+        [[ -d "$PWD" ]] && start_dir="$PWD"
+        [[ -d /data-nvme1 ]] && start_dir="/data-nvme1"
+        if gum confirm --default=false --prompt.foreground="240" \
+                "Is the source an .mkv file?"; then
+            SOURCE=$(gum file --file --cursor="▸ " "$start_dir") || exit 1
+        else
+            SOURCE=$(gum file --directory --cursor="▸ " "$start_dir") || exit 1
+        fi
+    fi
+
+    # Output
+    if [[ -z "$OUTPUT" ]]; then
+        local default_out
+        if [[ -d "$SOURCE" ]]; then
+            # BDMV folder: drop trailing /BDMV and append .bd25
+            default_out="${SOURCE%/BDMV}.bd25"
+            default_out="${default_out%/}.bd25"
+        else
+            # File source: replace extension with .bd25
+            default_out="${SOURCE%.*}.bd25"
+        fi
+        OUTPUT=$(gum input --placeholder "$default_out" --prompt "Output directory: ") || exit 1
+        [[ -z "$OUTPUT" ]] && OUTPUT="$default_out"
+    fi
+
+    # Boolean options
+    if ! $MOVIE_ONLY; then
+        MOVIE_ONLY=$(gum confirm --default=false "Movie-only mode (no menus/extras)?" && echo true || echo false)
+    fi
+    if $MOVIE_ONLY; then
+        KEEP_ONE=true
+    fi
+    if ! $OUTPUT_ISO; then
+        OUTPUT_ISO=$(gum confirm --default=false "Output ISO instead of BDMV folder?" && echo true || echo false)
+    fi
+    if [[ -d "$OUTPUT" ]] && ! $FORCE; then
+        FORCE=$(gum confirm --default=false "Output exists. Overwrite?" && echo true || echo false)
+    fi
+
+    # Optional advanced options
+    if gum confirm --default=false "Show advanced options?"; then
+        MAIN_PRESET=$(gum choose --selected "$MAIN_PRESET" \
+            ultrafast superfast veryfast faster fast medium slow slower veryslow placebo) || true
+        TARGET_GB=$(gum input --value "$TARGET_GB" --prompt "Target size (GB): ") || true
+        if [[ "$TARGET_GB" =~ ^[0-9]+$ ]]; then
+            TARGET_GB="$TARGET_GB"
+        else
+            TARGET_GB=23
+        fi
+    fi
+
+    # Summary
+    gum style --border normal --padding "0 1" \
+        --foreground 99 "Source:  $SOURCE" \
+        "Output:  $OUTPUT" \
+        "Movie-only: $MOVIE_ONLY" \
+        "ISO: $OUTPUT_ISO" \
+        "Preset:  $MAIN_PRESET" \
+        "Target:  ${TARGET_GB} GB"
+
+    gum confirm --default=true "Start processing?" || exit 0
 }
 
 check_deps() {
@@ -104,10 +179,16 @@ while [[ $# -gt 0 ]]; do
         -f|--force)        FORCE=true; shift ;;
         -n|--dry-run)      DRY_RUN=true; shift ;;
         -w|--work)         WORK_DIR="$2"; shift 2 ;;
+        --tui)             USE_TUI=true; shift ;;
         -h|--help)         usage ;;
         *)                 die "Unknown option: $1" ;;
     esac
 done
+
+# Launch interactive TUI if requested
+if $USE_TUI; then
+    run_tui
+fi
 
 # --movie-only implies --keep-one (only the first main playlist is encoded)
 if $MOVIE_ONLY; then
