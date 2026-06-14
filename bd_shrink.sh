@@ -1383,6 +1383,21 @@ def get_sub_codecs(clip):
     except:
         return []
 
+def get_audio_codecs(clip):
+    """Return list of audio codec names (e.g. 'ac3', 'dts', 'mp3') for a clip."""
+    cpath = os.path.join(clips_dir, '{}.json'.format(clip))
+    if not os.path.isfile(cpath):
+        return []
+    try:
+        d = json.load(open(cpath))
+        codecs = []
+        for s in d.get('streams', []):
+            if s.get('codec_type') == 'audio':
+                codecs.append(s.get('codec_name', '?'))
+        return codecs
+    except:
+        return []
+
 def sub_ext(codec):
     if codec in ('subrip', 'srt', 'text'):
         return 'srt'
@@ -1445,15 +1460,21 @@ if not no_extras and not movie_only:
         # Audio extraction
         audio_tracks = 0
         if src_aud > 0:
-            audio_args = ['ffmpeg', '-y', '-v', 'error', '-i', src]
+            audio_codecs = get_audio_codecs(clip)
+            audio_args = ['ffmpeg', '-y', '-v', 'error', '-fflags', '+genpts', '-i', src]
+            actual_audio_idx = 0
             for ai in range(src_aud):
+                codec = audio_codecs[ai] if ai < len(audio_codecs) else '?'
+                if codec in ('mp3', 'mp3float', 'mp2', 'mp2float'):
+                    sys.stderr.write('    skipping MPEG audio track {}\n'.format(ai))
+                    continue
                 audio_args += ['-map', '0:a:{}'.format(ai), '-c:a', 'ac3',
                                '-b:a', extras_audio_bitrate,
-                               os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, ai))]
-            if run_ff(audio_args):
-                audio_tracks = src_aud
-                # Verify all files exist
-                for ai in range(src_aud):
+                               os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, actual_audio_idx))]
+                actual_audio_idx += 1
+            if actual_audio_idx > 0 and run_ff(audio_args):
+                audio_tracks = actual_audio_idx
+                for ai in range(actual_audio_idx):
                     if not os.path.isfile(os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, ai))):
                         audio_tracks = 0
                         break
@@ -1481,10 +1502,7 @@ if not no_extras and not movie_only:
                     sub_tracks = actual_sub_idx
 
         if audio_tracks == 0:
-            # Copy original clip
-            subprocess.run(['cp', src, os.path.join(encode_dir, '{}.m2ts'.format(clip))], timeout=300)
-            sys.stderr.write('  (copied original)\n')
-            continue
+            sys.stderr.write('  (video-only)\n')
 
         # Video encoding
         video_filter = []
@@ -1519,15 +1537,21 @@ if main_clips:
         # Audio extraction
         audio_tracks = 0
         if src_aud > 0:
-            audio_args = ['ffmpeg', '-y', '-v', 'error', '-i', src,
-                          '-map', '0:a:0', '-c:a', 'ac3', '-b:a', main_audio_bitrate,
-                          os.path.join(encode_dir, '{}_audio_0.ac3'.format(clip))]
-            for ai in range(1, src_aud):
+            audio_codecs = get_audio_codecs(clip)
+            audio_args = ['ffmpeg', '-y', '-v', 'error', '-fflags', '+genpts', '-i', src]
+            actual_audio_idx = 0
+            for ai in range(src_aud):
+                codec = audio_codecs[ai] if ai < len(audio_codecs) else '?'
+                if codec in ('mp3', 'mp3float', 'mp2', 'mp2float'):
+                    sys.stderr.write('    skipping MPEG audio track {}\n'.format(ai))
+                    continue
+                bitrate = main_audio_bitrate if actual_audio_idx == 0 else commentary_audio_bitrate
                 audio_args += ['-map', '0:a:{}'.format(ai), '-c:a', 'ac3',
-                               '-b:a', commentary_audio_bitrate,
-                               os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, ai))]
-            if run_ff(audio_args):
-                audio_tracks = src_aud
+                               '-b:a', bitrate,
+                               os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, actual_audio_idx))]
+                actual_audio_idx += 1
+            if actual_audio_idx > 0 and run_ff(audio_args):
+                audio_tracks = actual_audio_idx
 
         # Subtitle extraction
         sub_tracks = 0
