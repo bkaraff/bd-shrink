@@ -23,6 +23,8 @@ OUTPUT_ISO=false
 COMMENTARY_AUDIO_BITRATE="128k"
 USE_TUI=false
 INSTALL_DEPS=false
+BURN=false
+BURN_DEVICE=""
 
 # Catppuccin Mocha true-color ANSI codes for TUI styling
 CCTP_RESET=$'\e[0m'
@@ -98,6 +100,8 @@ Options:
   -w, --work DIR         Working directory (default: <output>.work)
       --tui              Interactive TUI mode (requires gum)
       --install-deps     Show required tools and install commands, then exit
+      --burn              Burn output to BD-R after validation
+      --burn-device DEV   Optical drive device path (auto-detected if omitted)
   -h, --help             Show this help
 EOF
     exit 1
@@ -388,11 +392,18 @@ show_install_deps() {
         echo "  ✗ gum  (TUI mode) — sudo dnf install gum"
     fi
 
-    # xorriso (--iso output)
+    # xorriso (--iso output and --burn verification)
     if command -v xorriso &>/dev/null; then
-        echo "  ✓ xorriso  (--iso output)"
+        echo "  ✓ xorriso  (--iso output, --burn verification)"
     else
-        echo "  ✗ xorriso  (--iso output) — sudo dnf install xorriso"
+        echo "  ✗ xorriso  (--iso output, --burn verification) — sudo dnf install xorriso"
+    fi
+
+    # growisofs (--burn, preferred for UDF bridge)
+    if command -v growisofs &>/dev/null; then
+        echo "  ✓ growisofs  (--burn)"
+    else
+        echo "  ✗ growisofs  (--burn) — sudo dnf install dvd+rw-tools"
     fi
 
     echo ""
@@ -414,6 +425,78 @@ check_deps() {
     fi
     if ! python3 -c "import json, struct, os, sys" 2>/dev/null; then
         die "Python3 missing standard library modules"
+    fi
+}
+
+burn_output() {
+    # Burn the ISO to BD-R, verify, and eject.
+    # Requires xorriso (for ISO creation with MD5 and disc verification).
+    # Prefers growisofs for burning (UDF bridge for BD player compatibility).
+
+    local iso_file="$ISO_OUT"
+    local burn_dev="$BURN_DEVICE"
+
+    # ── Validate prerequisites ──────────────────────────────────────────────
+    if [[ ! -f "$iso_file" ]]; then
+        die "No ISO file found for burning (expected: $iso_file)"
+    fi
+
+    # Auto-detect burn device if not specified
+    if [[ -z "$burn_dev" ]]; then
+        for dev in /dev/sr*; do
+            if [[ -b "$dev" ]]; then
+                burn_dev="$dev"
+                break
+            fi
+        done
+        if [[ -z "$burn_dev" ]]; then
+            die "No optical drive found. Use --burn-device to specify one (e.g., /dev/sr0)"
+        fi
+    fi
+
+    # Validate burn device
+    if [[ ! -b "$burn_dev" ]]; then
+        die "Burn device not found or not a block device: $burn_dev"
+    fi
+
+    # Require xorriso (needed for MD5 verification and ISO creation)
+    if ! command -v xorriso &>/dev/null; then
+        die "xorriso is required for --burn (install: sudo dnf install xorriso)"
+    fi
+
+    # ── Burn ─────────────────────────────────────────────────────────────────
+    log "Burning to $burn_dev..."
+
+    if command -v growisofs &>/dev/null; then
+        log "Using growisofs (UDF bridge for BD player compatibility)..."
+        run_ff growisofs -dvd-compat -Z "${burn_dev}=${iso_file}" || {
+            die "Burn failed with growisofs"
+        }
+    else
+        warn "growisofs not found — burning with xorriso (no UDF bridge)."
+        warn "Some standalone BD players may not read this disc."
+        warn "Install dvd+rw-tools for better compatibility: sudo dnf install dvd+rw-tools"
+        log "Using xorriso cdrecord emulation..."
+        run_ff xorriso -as cdrecord -v -sao dev="$burn_dev" "$iso_file" || {
+            die "Burn failed with xorriso"
+        }
+    fi
+
+    # ── Verify ───────────────────────────────────────────────────────────────
+    log "Verifying disc (MD5 checksum comparison)..."
+    xorriso -indev "$burn_dev" -check_md5 FAILURE -- 2>/dev/null || {
+        die "Disc verification failed — data may be corrupted"
+    }
+    info "Disc verification passed."
+
+    # ── Eject ────────────────────────────────────────────────────────────────
+    log "Ejecting $burn_dev..."
+    eject "$burn_dev" 2>/dev/null || true
+
+    # ── Cleanup temp ISO ─────────────────────────────────────────────────────
+    if ! $OUTPUT_ISO && [[ -f "$iso_file" ]]; then
+        log "Removing temporary ISO: $iso_file"
+        rm -f "$iso_file"
     fi
 }
 
@@ -444,6 +527,8 @@ while [[ $# -gt 0 ]]; do
         -w|--work)         WORK_DIR="$2"; shift 2 ;;
         --tui)             USE_TUI=true; shift ;;
         --install-deps)    INSTALL_DEPS=true; shift ;;
+        --burn)            BURN=true; shift ;;
+        --burn-device)     BURN_DEVICE="$2"; shift 2 ;;
         -h|--help)         usage ;;
         *)                 die "Unknown option: $1" ;;
     esac
@@ -1776,12 +1861,26 @@ else
 
 fi  # end if MOVIE_ONLY
 
-# Create ISO if requested (wraps the BDMV folder created above)
-if $OUTPUT_ISO; then
-    ISO_OUT="${OUTPUT%.iso}.iso"
+# Create ISO if requested (--iso) or needed (--burn)
+if $OUTPUT_ISO || $BURN; then
+    if $BURN && ! $OUTPUT_ISO; then
+        # Temp ISO for burning only — stored in work dir, removed after burn
+        ISO_OUT="${WORK_DIR}/bd_shrink_burn.iso"
+    else
+        ISO_OUT="${OUTPUT%.iso}.iso"
+    fi
+
     log "Creating ISO: ${ISO_OUT}..."
 
-    if command -v xorriso &>/dev/null; then
+    if $BURN; then
+        # Burning requires xorriso with MD5 checksums for verification
+        if ! command -v xorriso &>/dev/null; then
+            die "xorriso is required for --burn (install: sudo dnf install xorriso)"
+        fi
+        xorriso -md5 on -outdev "$ISO_OUT" -volid "BD_SHRINK" -map "$DST" / -commit 2>/dev/null || {
+            die "ISO creation failed with xorriso (required for --burn)"
+        }
+    elif command -v xorriso &>/dev/null; then
         xorriso -outdev "$ISO_OUT" -volid "BD_SHRINK" -map "$DST" / -commit 2>/dev/null || {
             warn "ISO creation failed with xorriso"
         }
@@ -1796,6 +1895,10 @@ if $OUTPUT_ISO; then
     else
         warn "No ISO creation tool found (xorriso/genisoimage/mkisofs). Install one and run:"
         warn "  xorriso -outdev ${ISO_OUT} -volid 'BD_SHRINK' -map ${DST} / -commit"
+    fi
+
+    if $BURN && [[ ! -f "$ISO_OUT" ]]; then
+        die "ISO creation failed — cannot proceed with --burn"
     fi
 fi
 
@@ -1830,6 +1933,11 @@ if [[ -d "$DST" ]] && [[ -d "$DST/BDMV" ]]; then
     fi
 fi
 
+# ─── Burn ──────────────────────────────────────────────────────────────────────
+if $BURN; then
+    burn_output
+fi
+
 # ─── Done ─────────────────────────────────────────────────────────────────────
 log "Done! Output: $DST"
 if $HAS_BDJ && ! $MOVIE_ONLY; then
@@ -1838,7 +1946,9 @@ elif $MOVIE_ONLY; then
     info "Movie-only — no BD-J concerns."
 fi
 log "Working files retained at: $WORK_DIR (delete manually when satisfied)"
-log "IMPORTANT: Test the output in VLC or mpv before burning to disc!"
+if ! $BURN; then
+    log "IMPORTANT: Test the output in VLC or mpv before burning to disc!"
+fi
 
 # Cleanup temp directories
 rm -rf "${REBUILD_DIR:-}" 2>/dev/null || true

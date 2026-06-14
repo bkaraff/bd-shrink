@@ -142,6 +142,13 @@ When run without `-s`/`-o` in an interactive terminal with `gum` installed, the 
 
 ## Next steps
 
-### Burn-to-disk (`--burn`)
+### Burn-to-disk (`--burn`) — IMPLEMENTED
 
-Add a flag to burn the output directly to BD-R after the rebuild phase. Uses `xorriso` (Linux) or `cdrecord`/`growisofs` to write the BDMV folder or ISO to `/dev/srX`. Requires a BD-R drive — needs testing before implementation.
+Burns output directly to BD-R after validation. Creates a temp ISO with `xorriso -md5 on` (for post-burn verification), then burns with `growisofs` (preferred, adds UDF bridge) or `xorriso -as cdrecord` (fallback, no UDF). After burning, verifies disc checksums with `xorriso -check_md5` and ejects. Temp ISO is removed unless `--iso` was also specified.
+
+Key details:
+- `xorriso` is **required** for `--burn` (ISO creation with MD5 + disc verification)
+- `growisofs` (from `dvd+rw-tools`) is preferred for burning — provides UDF bridge for BD player compatibility
+- Without `growisofs`, the script falls back to `xorriso -as cdrecord` but warns about reduced BD player compatibility (no UDF)
+- `--burn-device /dev/sr0` specifies the optical drive; auto-detected if omitted
+- `--burn` without `--iso` creates a temp ISO in `$WORK_DIR`, removed after verification

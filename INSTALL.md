@@ -47,6 +47,17 @@ sudo dnf install ffmpeg libbluray-utils
 `xorriso` is needed for `--iso` output (the script also falls back to `genisoimage` or `mkisofs`).
 `gum` is needed for the interactive TUI mode.
 
+## Optional: BD-R burning (`--burn`)
+
+| Tool | Where to get it | Check |
+|------|----------------|-------|
+| `xorriso` | `sudo dnf install xorriso` | `xorriso --version` |
+| `growisofs` | `sudo dnf install dvd+rw-tools` | `growisofs --version` |
+| `eject` | Usually pre-installed | `eject --version` |
+
+`xorriso` is **required** for `--burn` — it creates the ISO with MD5 checksums and verifies the disc after burning.
+`growisofs` is preferred for burning because it provides a UDF bridge for standalone BD player compatibility. Without it, `xorriso -as cdrecord` is used as a fallback (no UDF bridge).
+
 ## Verification
 
 Run the dry-run to confirm everything works:

@@ -9,7 +9,7 @@ A Linux-native alternative to BD Rebuilder that uses `ffmpeg` + `tsMuxeR` to re-
 ## Quick Start
 
 ```bash
-# Check for missing dependencies and see install commands
+# Show required dependencies and install commands (no source/output needed)
 ./bd_shrink.sh --install-deps
 
 # Movie-only backup — fit on BD25
@@ -73,8 +73,9 @@ Main bitrate:   17.53 Mbps  (to fill BD25)
 
 ## Output
 
-- **Folder**: Complete BDMV structure ready to burn with `mkudffs` + `growisofs`
-- **ISO** (`--iso`): Direct ISO output from `tsMuxeR`
+- **Folder**: Complete BDMV structure ready to burn with `growisofs` or `xorriso`
+- **ISO** (`--iso`): Direct ISO output from `xorriso`
+- **Burn** (`--burn`): Burn to BD-R disc after validation, with MD5 verification and auto-eject
 
 ## File structure of a typical BD50
 
@@ -105,6 +106,8 @@ CERTIFICATE/
   -t, --target NUM       Target size in GB (default: 23 for BD25)
   --movie-only           Movie-only backup (no menus, fresh BD author)
   --iso                  Output ISO instead of BDMV folder
+  --burn                  Burn output to BD-R after validation
+  --burn-device DEV       Optical drive device path (auto-detected if omitted)
   --no-extras            Skip extras entirely
   --keep-one             Only keep the longest movie playlist
   --extras-scale WxH     Extras downscale resolution (default: 1280:720)
@@ -129,6 +132,8 @@ CERTIFICATE/
 | `python3` | MPLS binary parsing, data processing |
 | `systemd-run` | Transient service management (part of systemd) |
 | `libbluray-utils` | `bd_info` / `bd_list_titles` (optional) |
+| `growisofs` | BD-R burning with UDF bridge (optional, `--burn`) |
+| `xorriso` | ISO creation, burn verification (optional, `--burn` / `--iso`) |
 
 See [INSTALL.md](INSTALL.md) for setup instructions, or run `./bd_shrink.sh --install-deps` to check for missing tools.
 
