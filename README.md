@@ -9,8 +9,8 @@ A Linux-native alternative to BD Rebuilder that uses `ffmpeg` + `tsMuxeR` to re-
 ## Quick Start
 
 ```bash
-# Prerequisites (see INSTALL.md)
-sudo dnf install ffmpeg libbluray-utils bc
+# Check for missing dependencies and see install commands
+./bd_shrink.sh --install-deps
 
 # Movie-only backup — fit on BD25
 ./bd_shrink.sh -s /path/to/BDMV -o /output/movie -t 23 --movie-only
@@ -115,6 +115,7 @@ CERTIFICATE/
   --commentary-ab        Commentary/secondary audio bitrate (default: 128k)
   -f, --force            Overwrite output if it exists
   -n, --dry-run          Show what would be done without encoding
+      --install-deps     Show required tools and install commands, then exit
   -h, --help             Show this help
 ```
 
@@ -126,9 +127,10 @@ CERTIFICATE/
 | `tsMuxeR` | Blu-ray structure authoring (v2.7.0+) |
 | `bc` | Math calculations |
 | `python3` | MPLS binary parsing, data processing |
+| `systemd-run` | Transient service management (part of systemd) |
 | `libbluray-utils` | `bd_info` / `bd_list_titles` (optional) |
 
-See [INSTALL.md](INSTALL.md) for setup instructions.
+See [INSTALL.md](INSTALL.md) for setup instructions, or run `./bd_shrink.sh --install-deps` to check for missing tools.
 
 ## How It Works
 

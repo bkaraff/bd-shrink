@@ -1,5 +1,13 @@
 # bd_shrink.sh — Installation & Dependencies
 
+## Quick Check
+
+Run this first — it prints which tools are missing and the exact commands to install them:
+
+```bash
+./bd_shrink.sh --install-deps
+```
+
 ## Required Tools
 
 | Tool | Where to get it | Check |
@@ -8,6 +16,7 @@
 | `tsMuxeR` | Download binary from [justdan96/tsMuxer](https://github.com/justdan96/tsMuxer/releases/tag/2.7.0) | `tsMuxeR --version` |
 | `bc` | `sudo dnf install bc` | `bc --version` |
 | `python3` | Usually pre-installed | `python3 --version` |
+| `systemd-run` | Part of `systemd` (always present on Fedora) | `systemd-run --version` |
 | `libbluray-utils` | `sudo dnf install libbluray-utils` | `bd_info --help` |
 
 ## tsMuxeR Setup
@@ -28,13 +37,15 @@ tsMuxeR --version
 sudo dnf install ffmpeg libbluray-utils
 ```
 
-## Optional: ISO output (`--iso`)
+## Optional: ISO output (`--iso`) and TUI mode
 
 | Tool | Where to get it | Check |
 |------|----------------|-------|
 | `xorriso` | `sudo dnf install xorriso` | `xorriso --version` |
+| `gum` | `sudo dnf install gum` (Fedora 42+, EPEL 10) | `gum --version` |
 
-The script also falls back to `genisoimage` or `mkisofs` if xorriso isn't available.
+`xorriso` is needed for `--iso` output (the script also falls back to `genisoimage` or `mkisofs`).
+`gum` is needed for the interactive TUI mode.
 
 ## Verification
 

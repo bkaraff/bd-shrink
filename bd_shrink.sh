@@ -22,6 +22,7 @@ MOVIE_ONLY=false
 OUTPUT_ISO=false
 COMMENTARY_AUDIO_BITRATE="128k"
 USE_TUI=false
+INSTALL_DEPS=false
 
 # Catppuccin Mocha true-color ANSI codes for TUI styling
 CCTP_RESET=$'\e[0m'
@@ -96,6 +97,7 @@ Options:
   -n, --dry-run          Show what would be done without encoding
   -w, --work DIR         Working directory (default: <output>.work)
       --tui              Interactive TUI mode (requires gum)
+      --install-deps     Show required tools and install commands, then exit
   -h, --help             Show this help
 EOF
     exit 1
@@ -305,6 +307,103 @@ run_tui() {
     done
 }
 
+show_install_deps() {
+    # Detect required and optional tools, print install commands for missing ones.
+    # Does NOT auto-install anything — just tells the user what to run.
+    local found=0 missing=0
+
+    echo "bd_shrink.sh — dependency check"
+    echo ""
+
+    # ── Required tools ──────────────────────────────────────────────────────
+    echo "Required tools:"
+    echo ""
+
+    # ffmpeg / ffprobe (usually from the same package)
+    local ffmpeg_ok=true
+    command -v ffmpeg &>/dev/null || ffmpeg_ok=false
+    command -v ffprobe &>/dev/null || ffmpeg_ok=false
+    if $ffmpeg_ok; then
+        echo "  ✓ ffmpeg + ffprobe"
+        ((++found))
+    else
+        echo "  ✗ ffmpeg / ffprobe"
+        echo "    sudo dnf install ffmpeg"
+        echo "    Note: ffmpeg requires the rpmfusion-free repo."
+        echo "    Enable it: sudo dnf install rpmfusion-free-release"
+        ((++missing))
+    fi
+
+    # tsMuxeR (GitHub binary only)
+    if command -v tsMuxeR &>/dev/null; then
+        echo "  ✓ tsMuxeR"
+        ((++found))
+    else
+        echo "  ✗ tsMuxeR"
+        echo "    # Download and install (GitHub binary, no dnf package):"
+        echo "    wget https://github.com/justdan96/tsMuxer/releases/download/2.7.0/tsMuxer-2.7.0-linux.zip"
+        echo "    unzip tsMuxer-2.7.0-linux.zip"
+        echo "    sudo cp tsMuxer/tsMuxeR /usr/local/bin/"
+        ((++missing))
+    fi
+
+    # bc
+    if command -v bc &>/dev/null; then
+        echo "  ✓ bc"
+        ((++found))
+    else
+        echo "  ✗ bc"
+        echo "    sudo dnf install bc"
+        ((++missing))
+    fi
+
+    # python3 + stdlib modules
+    if command -v python3 &>/dev/null && python3 -c "import json, struct, os, sys" 2>/dev/null; then
+        echo "  ✓ python3 (with json, struct, os, sys)"
+        ((++found))
+    else
+        echo "  ✗ python3"
+        echo "    sudo dnf install python3"
+        ((++missing))
+    fi
+
+    # systemd-run (should always be present)
+    if command -v systemd-run &>/dev/null; then
+        echo "  ✓ systemd-run"
+        ((++found))
+    else
+        echo "  ✗ systemd-run"
+        echo "    sudo dnf install systemd"
+        ((++missing))
+    fi
+
+    echo ""
+    echo "Optional tools:"
+    echo ""
+
+    # gum (TUI mode)
+    if command -v gum &>/dev/null; then
+        echo "  ✓ gum  (TUI mode)"
+    else
+        echo "  ✗ gum  (TUI mode) — sudo dnf install gum"
+    fi
+
+    # xorriso (--iso output)
+    if command -v xorriso &>/dev/null; then
+        echo "  ✓ xorriso  (--iso output)"
+    else
+        echo "  ✗ xorriso  (--iso output) — sudo dnf install xorriso"
+    fi
+
+    echo ""
+    echo "Summary: ${found} of $((found + missing)) required tools found."
+    if [[ ${missing} -gt 0 ]]; then
+        echo "Install the missing tools using the commands above, then re-run this script."
+    fi
+
+    exit 0
+}
+
 check_deps() {
     local missing=()
     for cmd in run_ff ffmpeg ffprobe tsMuxeR bc python3; do
@@ -344,10 +443,16 @@ while [[ $# -gt 0 ]]; do
         -n|--dry-run)      DRY_RUN=true; shift ;;
         -w|--work)         WORK_DIR="$2"; shift 2 ;;
         --tui)             USE_TUI=true; shift ;;
+        --install-deps)    INSTALL_DEPS=true; shift ;;
         -h|--help)         usage ;;
         *)                 die "Unknown option: $1" ;;
     esac
 done
+
+# --install-deps: show dependency info and exit (no source/output required)
+if $INSTALL_DEPS; then
+    show_install_deps
+fi
 
 # Launch interactive TUI if requested, or if required args are missing and we
 # have an interactive terminal with gum available.
