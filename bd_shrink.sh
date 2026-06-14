@@ -484,7 +484,7 @@ burn_output() {
 
     # ── Verify ───────────────────────────────────────────────────────────────
     log "Verifying disc (MD5 checksum comparison)..."
-    xorriso -indev "$burn_dev" -check_md5 FAILURE -- 2>/dev/null || {
+    run_ff xorriso -indev "$burn_dev" -check_md5 FAILURE -- 2>/dev/null || {
         die "Disc verification failed — data may be corrupted"
     }
     info "Disc verification passed."
