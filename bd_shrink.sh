@@ -148,63 +148,71 @@ run_tui() {
                 --affirmative "Continue" --negative "Exit" \
                 "Continue to source selection?" || exit 0
 
-            # If SOURCE_ROOT is saved, offer a fuzzy list of its contents first.
-            local selected=""
-            if [[ -n "$SOURCE_ROOT" ]] && [[ -d "$SOURCE_ROOT" ]]; then
-                gum style --foreground "#7f849c" "Looking in: ${SOURCE_ROOT}"
-                local dirs=("$SOURCE_ROOT"/*(/N) "$SOURCE_ROOT"/*.mkv(N) "$SOURCE_ROOT"/*.m2ts(N) "$SOURCE_ROOT"/*.ts(N) "$SOURCE_ROOT"/*.iso(N))
-                if [[ ${#dirs[@]} -gt 0 ]]; then
-                    typeset -a names
-                    for d in "${dirs[@]}"; do names+=("${d##*/}"); done
-                    local choice=$(print -l "${(@)names}" \
-                        | gum filter --header="SELECT SOURCE" --placeholder "Search sources (esc = browse file system)..." || true)
-                    if [[ -n "$choice" ]]; then
-                        selected="$SOURCE_ROOT/$choice"
+            # Retry until a valid source is selected
+            while true; do
+                local selected=""
+                if [[ -n "$SOURCE_ROOT" ]] && [[ -d "$SOURCE_ROOT" ]]; then
+                    gum style --foreground "#7f849c" "Looking in: ${SOURCE_ROOT}"
+                    local dirs=("$SOURCE_ROOT"/*(/N) "$SOURCE_ROOT"/*.mkv(N) "$SOURCE_ROOT"/*.m2ts(N) "$SOURCE_ROOT"/*.ts(N) "$SOURCE_ROOT"/*.iso(N))
+                    if [[ ${#dirs[@]} -gt 0 ]]; then
+                        typeset -a names
+                        for d in "${dirs[@]}"; do names+=("${d##*/}"); done
+                        local choice=$(print -l "${(@)names}" \
+                            | gum filter --header="SELECT SOURCE" --placeholder "Search sources (esc = browse file system)..." || true)
+                        if [[ -n "$choice" ]]; then
+                            selected="$SOURCE_ROOT/$choice"
+                        fi
                     fi
                 fi
-            fi
 
-            # Fall back to the file browser.
-            if [[ -z "$selected" ]]; then
-                local start_dir="$SOURCE_ROOT"
-                [[ -z "$start_dir" ]] && start_dir="/data-nvme1"
-                [[ -z "$start_dir" ]] && start_dir="${HOME}"
-                selected=$(gum file --directory --cursor="▸ " "$start_dir" \
-                    --header="SELECT SOURCE from ${start_dir} — ↑↓ move, → enter dir, ← go up, enter select") || exit 1
-            fi
-
-            # Detect the actual source inside the selected movie folder.
-            local movie_folder=""
-            if [[ -f "$selected/index.bdmv" ]]; then
-                SOURCE="$selected"
-                movie_folder="${selected:h}"
-            elif [[ -f "$selected/BDMV/index.bdmv" ]]; then
-                SOURCE="$selected/BDMV"
-                movie_folder="$selected"
-            elif [[ -f "$selected" ]]; then
-                SOURCE="$selected"
-                movie_folder="${selected:h}"
-                MOVIE_ONLY=true
-            else
-                typeset -a found_bdmv
-                found_bdmv=("$selected"/*/BDMV(N))
-                if [[ -n "${found_bdmv[1]:-}" ]] && [[ -f "${found_bdmv[1]}/index.bdmv" ]]; then
-                    SOURCE="${found_bdmv[1]}"
-                    movie_folder="${found_bdmv[1]:h}"
+                # Fall back to the file browser.
+                if [[ -z "$selected" ]]; then
+                    local start_dir="$SOURCE_ROOT"
+                    [[ -z "$start_dir" || ! -d "$start_dir" ]] && start_dir="/data-nvme1"
+                    [[ -z "$start_dir" || ! -d "$start_dir" ]] && start_dir="${HOME}"
+                    selected=$(gum file --directory --cursor="▸ " "$start_dir" \
+                        --header="SELECT SOURCE — ↑↓ move, → enter dir, ← go up, enter select") || exit 1
                 fi
-            fi
 
-            # If no BDMV, look for a video/ISO file directly inside the selected folder.
-            if [[ -z "$SOURCE" ]]; then
-                local videos=("$selected"/*.mkv(N) "$selected"/*.m2ts(N) "$selected"/*.ts(N) "$selected"/*.iso(N))
-                if [[ -n "${videos[1]:-}" ]]; then
-                    SOURCE="${videos[1]}"
+                # Detect the actual source inside the selected movie folder.
+                local movie_folder=""
+                if [[ -f "$selected/index.bdmv" ]]; then
+                    SOURCE="$selected"
+                    movie_folder="${selected:h}"
+                elif [[ -f "$selected/BDMV/index.bdmv" ]]; then
+                    SOURCE="$selected/BDMV"
                     movie_folder="$selected"
+                elif [[ -f "$selected" ]]; then
+                    SOURCE="$selected"
+                    movie_folder="${selected:h}"
                     MOVIE_ONLY=true
+                else
+                    typeset -a found_bdmv
+                    found_bdmv=("$selected"/*/BDMV(N))
+                    if [[ -n "${found_bdmv[1]:-}" ]] && [[ -f "${found_bdmv[1]}/index.bdmv" ]]; then
+                        SOURCE="${found_bdmv[1]}"
+                        movie_folder="${found_bdmv[1]:h}"
+                    fi
                 fi
-            fi
 
-            [[ -z "$SOURCE" ]] && die "No BDMV folder or video file found under $selected"
+                # If no BDMV, look for a video/ISO file directly inside the selected folder.
+                if [[ -z "$SOURCE" ]]; then
+                    local videos=("$selected"/*.mkv(N) "$selected"/*.m2ts(N) "$selected"/*.ts(N) "$selected"/*.iso(N))
+                    if [[ -n "${videos[1]:-}" ]]; then
+                        SOURCE="${videos[1]}"
+                        movie_folder="$selected"
+                        MOVIE_ONLY=true
+                    fi
+                fi
+
+                if [[ -n "$SOURCE" ]]; then
+                    break  # valid source found
+                fi
+
+                warn "No BDMV folder or video file found under $selected"
+                warn "Select the folder CONTAINING BDMV/ or index.bdmv, not its parent."
+                SOURCE_ROOT="$selected"  # retry from the selected directory
+            done
 
             # Remember the parent of the movie folder as SOURCE_ROOT.
             if [[ -n "$movie_folder" ]]; then
