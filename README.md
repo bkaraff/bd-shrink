@@ -132,8 +132,10 @@ CERTIFICATE/
 | `python3` | MPLS binary parsing, data processing |
 | `systemd-run` | Transient service management (part of systemd) |
 | `libbluray-utils` | `bd_info` / `bd_list_titles` (optional) |
-| `growisofs` | BD-R burning with UDF bridge (optional, `--burn`) |
-| `xorriso` | ISO creation, burn verification (optional, `--burn` / `--iso`) |
+| `growisofs` (from `dvd+rw-tools`) | BD-R burning with UDF bridge (optional, `--burn`) |
+| `genisoimage` | UDF ISO creation for `growisofs` (optional, `--burn`) |
+| `eject` (from `util-linux`) | Disc ejection after burn (optional, `--burn`) |
+| `vlc` or `mpv` + `libbluray` | Playback / testing output before burning (optional) |
 
 See [INSTALL.md](INSTALL.md) for setup instructions, or run `./bd_shrink.sh --install-deps` to check for missing tools.
 

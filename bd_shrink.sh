@@ -26,6 +26,26 @@ INSTALL_DEPS=false
 BURN=false
 BURN_DEVICE=""
 
+# Default output directory when -o is omitted
+MOVIES_DIR="${HOME}/Movies"
+
+# Derive a clean title from the source path for auto-naming output
+get_source_title() {
+    local src="$1"
+    if [[ -d "$src" ]]; then
+        local dir="$src"
+        [[ "$dir" == */BDMV ]] && dir="${dir%/BDMV}"
+        local title="${dir##*/}"
+        title="${title//:/ -}"
+        printf '%s\n' "$title"
+    elif [[ -f "$src" ]]; then
+        local fname="${src##*/}"
+        printf '%s\n' "${fname%.*}"
+    else
+        printf '%s\n' "output"
+    fi
+}
+
 # Catppuccin Mocha true-color ANSI codes for TUI styling
 CCTP_RESET=$'\e[0m'
 CCTP_BLUE=$'\e[38;2;137;180;250m'       # #89b4fa accent
@@ -67,7 +87,7 @@ trap 'echo "FATAL: line $LINENO exit $?" >&2' ERR
 # The command runs as a transient systemd service, NOT as a child of bash.
 # Even if the shell crashes, the service continues to completion.
 run_ff() {
-    systemd-run --user --wait -q -u "bd_ff.${RANDOM}.$$" -- "$@"
+    systemd-run --user --wait -q -u "bd_ff.${RANDOM}.$$" --setenv=PATH=/usr/local/bin:/usr/bin:/bin -- "$@"
 }
 
 usage() {
@@ -196,13 +216,8 @@ run_tui() {
 
         # ── Output ──
         if [[ -z "$OUTPUT" ]]; then
-            local default_out
-            if [[ -d "$SOURCE" ]]; then
-                default_out="${SOURCE%/BDMV}.bd25"
-                default_out="${default_out%/}.bd25"
-            else
-                default_out="${SOURCE%.*}.bd25"
-            fi
+            local source_title=$(get_source_title "$SOURCE")
+            local default_out="${MOVIES_DIR}/${source_title}"
             OUTPUT=$(gum input --placeholder "$default_out" --prompt "Output: ") || exit 1
             [[ -z "$OUTPUT" ]] && OUTPUT="$default_out"
         fi
@@ -401,9 +416,23 @@ show_install_deps() {
 
     # growisofs (--burn, preferred for UDF bridge)
     if command -v growisofs &>/dev/null; then
-        echo "  ✓ growisofs  (--burn)"
+        echo "  ✓ growisofs  (--burn, from dvd+rw-tools)"
     else
         echo "  ✗ growisofs  (--burn) — sudo dnf install dvd+rw-tools"
+    fi
+
+    # eject (--burn, disc ejection after verification)
+    if command -v eject &>/dev/null; then
+        echo "  ✓ eject  (--burn)"
+    else
+        echo "  ✗ eject  (--burn) — part of util-linux (usually pre-installed on Linux; not needed on macOS)"
+    fi
+
+    # Playback tools (vlc / mpv + libbluray)
+    if command -v vlc &>/dev/null || command -v mpv &>/dev/null; then
+        echo "  ✓ vlc / mpv  (playback)"
+    else
+        echo "  - vlc / mpv  (playback) — sudo dnf install vlc (or mpv)"
     fi
 
     echo ""
@@ -546,13 +575,19 @@ if $USE_TUI || { [[ -z "$SOURCE" || -z "$OUTPUT" ]] && [[ -t 1 ]] && command -v 
     run_tui
 fi
 
+# Auto-derive output path from source if not provided
+if [[ -z "$OUTPUT" ]]; then
+    local source_title=$(get_source_title "$SOURCE")
+    OUTPUT="${MOVIES_DIR}/${source_title}"
+    log "Output not specified — defaulting to ${OUTPUT}"
+fi
+
 # --movie-only implies --keep-one (only the first main playlist is encoded)
 if $MOVIE_ONLY; then
     KEEP_ONE=true
 fi
 
 [[ -z "$SOURCE" ]] && die "Source folder required (-s)"
-[[ -z "$OUTPUT" ]] && die "Output folder required (-o)"
 
 MKV_INPUT=false
 if [[ -f "$SOURCE" ]] && [[ "$SOURCE" == *.mkv ]]; then

@@ -37,26 +37,32 @@ tsMuxeR --version
 sudo dnf install ffmpeg libbluray-utils
 ```
 
-## Optional: ISO output (`--iso`) and TUI mode
+## Optional: TUI mode
 
 | Tool | Where to get it | Check |
 |------|----------------|-------|
-| `xorriso` | `sudo dnf install xorriso` | `xorriso --version` |
 | `gum` | `sudo dnf install gum` (Fedora 42+, EPEL 10) | `gum --version` |
-
-`xorriso` is needed for `--iso` output (the script also falls back to `genisoimage` or `mkisofs`).
-`gum` is needed for the interactive TUI mode.
 
 ## Optional: BD-R burning (`--burn`)
 
 | Tool | Where to get it | Check |
 |------|----------------|-------|
-| `xorriso` | `sudo dnf install xorriso` | `xorriso --version` |
 | `growisofs` | `sudo dnf install dvd+rw-tools` | `growisofs --version` |
-| `eject` | Usually pre-installed | `eject --version` |
+| `genisoimage` | `sudo dnf install genisoimage` | `genisoimage --version` |
+| `eject` | Part of `util-linux` (always pre-installed on Fedora) | `eject --version` |
 
-`xorriso` is **required** for `--burn` — it creates the ISO with MD5 checksums and verifies the disc after burning.
-`growisofs` is preferred for burning because it provides a UDF bridge for standalone BD player compatibility. Without it, `xorriso -as cdrecord` is used as a fallback (no UDF bridge).
+`growisofs` with `genisoimage` burns directly to BD-R with proper UDF 2.50. This is the preferred method for player compatibility.
+`xorriso` is pre-installed on Fedora and used by the script for MD5 verification and ISO creation, but is not a manual install dependency.
+
+## Optional: Playback & Testing
+
+| Tool | Where to get it | Check |
+|------|----------------|-------|
+| `vlc` | `sudo dnf install vlc` | `vlc --version` |
+| `mpv` | `sudo dnf install mpv` | `mpv --version` |
+| `libbluray` | `sudo dnf install libbluray` | (dependency, no direct command) |
+
+Test before burning: `vlc /path/to/BDMV` or `mpv bd:// --bluray-device=/path/to/output`.
 
 ## Verification
 
