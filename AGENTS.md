@@ -144,11 +144,21 @@ When run without `-s`/`-o` in an interactive terminal with `gum` installed, the 
 
 ### Burn-to-disk (`--burn`) — IMPLEMENTED
 
-Burns output directly to BD-R after validation. Creates a temp ISO with `xorriso -md5 on` (for post-burn verification), then burns with `growisofs` (preferred, adds UDF bridge) or `xorriso -as cdrecord` (fallback, no UDF). After burning, verifies disc checksums with `xorriso -check_md5` and ejects. Temp ISO is removed unless `--iso` was also specified.
+Burns output BDMV folder directly to BD-R. Two modes:
+
+- **`--burn` alone**: Pipes `genisoimage -udf` directly into `growisofs` — **no temp ISO created**. This avoids duplicating the ~22GB output.
+- **`--burn --iso`**: Creates an ISO file with `genisoimage -udf` first (for archival), then burns from the ISO.
+
+Both modes produce UDF-formatted discs (via `genisoimage -udf -allow-limited-size`). The `-allow-limited-size` flag is required because M2TS files on BD often exceed 4GiB. Previous xorriso-based approach produced plain ISO 9660 (no UDF) — discs showed as "data" in BD players.
 
 Key details:
-- `xorriso` is **required** for `--burn` (ISO creation with MD5 + disc verification)
-- `growisofs` (from `dvd+rw-tools`) is preferred for burning — provides UDF bridge for BD player compatibility
-- Without `growisofs`, the script falls back to `xorriso -as cdrecord` but warns about reduced BD player compatibility (no UDF)
+- `genisoimage` and `growisofs` are required for `--burn` (direct pipe mode)
+- `growisofs` (from `dvd+rw-tools`) provides UDF bridge for BD player compatibility
+- `MKISOFS=genisoimage` is set so `growisofs` uses the working UDF-capable mkisofs rather than xorriso's stub
+- Without `growisofs`, falls back to `xorriso -as cdrecord` for ISO file mode only (no UDF)
 - `--burn-device /dev/sr0` specifies the optical drive; auto-detected if omitted
-- `--burn` without `--iso` creates a temp ISO in `$WORK_DIR`, removed after verification
+- No MD5 verification (genisoimage lacks `-md5` support; growisofs handles burn verification internally for BD-R)
+
+### Menu preservation (surgical mode) — IMPLEMENTED
+
+Surgical mode reads `PlayList_type` from the MPLS binary's `AppInfoPlayList` struct. Playlists with `PlayList_type == 1` (menu/interactive) are forced into the menu category regardless of duration. Their clips are excluded from re-encoding in the budget phase (`extras_clips -= menu_clips`), preserving IGS (Interactive Graphics) button overlays.

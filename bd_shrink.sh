@@ -407,11 +407,18 @@ show_install_deps() {
         echo "  ✗ gum  (TUI mode) — sudo dnf install gum"
     fi
 
-    # xorriso (--iso output and --burn verification)
-    if command -v xorriso &>/dev/null; then
-        echo "  ✓ xorriso  (--iso output, --burn verification)"
+    # genisoimage (--iso output, --burn UDF filesystem)
+    if command -v genisoimage &>/dev/null; then
+        echo "  ✓ genisoimage  (--iso output, --burn UDF)"
     else
-        echo "  ✗ xorriso  (--iso output, --burn verification) — sudo dnf install xorriso"
+        echo "  ✗ genisoimage  (--iso output, --burn) — sudo dnf install genisoimage"
+    fi
+
+    # xorriso (--iso output fallback, no UDF)
+    if command -v xorriso &>/dev/null; then
+        echo "  ✓ xorriso  (--iso output, fallback)"
+    else
+        echo "  ✗ xorriso  (--iso output, fallback) — sudo dnf install xorriso"
     fi
 
     # growisofs (--burn, preferred for UDF bridge)
@@ -458,19 +465,13 @@ check_deps() {
 }
 
 burn_output() {
-    # Burn the ISO to BD-R, verify, and eject.
-    # Requires xorriso (for ISO creation with MD5 and disc verification).
-    # Prefers growisofs for burning (UDF bridge for BD player compatibility).
+    # Burn BDMV to BD-R. Two modes:
+    #   --iso: burn from pre-created ISO file (for archival + burn)
+    #   no --iso: pipe genisoimage -udf directly to growisofs (no temp ISO)
 
-    local iso_file="$ISO_OUT"
     local burn_dev="$BURN_DEVICE"
 
-    # ── Validate prerequisites ──────────────────────────────────────────────
-    if [[ ! -f "$iso_file" ]]; then
-        die "No ISO file found for burning (expected: $iso_file)"
-    fi
-
-    # Auto-detect burn device if not specified
+    # ── Auto-detect burn device if not specified ────────────────────────────
     if [[ -z "$burn_dev" ]]; then
         for dev in /dev/sr*; do
             if [[ -b "$dev" ]]; then
@@ -483,50 +484,46 @@ burn_output() {
         fi
     fi
 
-    # Validate burn device
+    # ── Validate burn device ─────────────────────────────────────────────────
     if [[ ! -b "$burn_dev" ]]; then
         die "Burn device not found or not a block device: $burn_dev"
     fi
 
-    # Require xorriso (needed for MD5 verification and ISO creation)
-    if ! command -v xorriso &>/dev/null; then
-        die "xorriso is required for --burn (install: sudo dnf install xorriso)"
-    fi
-
-    # ── Burn ─────────────────────────────────────────────────────────────────
-    log "Burning to $burn_dev..."
-
-    if command -v growisofs &>/dev/null; then
-        log "Using growisofs (UDF bridge for BD player compatibility)..."
-        run_ff growisofs -dvd-compat -Z "${burn_dev}=${iso_file}" || {
+    # ── Burn from ISO (--iso mode) or direct pipe ───────────────────────────
+    if $OUTPUT_ISO; then
+        # Burn from pre-created ISO file
+        if [[ ! -f "$ISO_OUT" ]]; then
+            die "No ISO file found for burning (expected: $ISO_OUT)"
+        fi
+        log "Burning ISO to $burn_dev..."
+        if command -v growisofs &>/dev/null; then
+            run_ff growisofs -dvd-compat -Z "${burn_dev}=${ISO_OUT}" || {
+                die "Burn failed with growisofs"
+            }
+        else
+            warn "growisofs not found — falling back to xorriso cdrecord (no UDF bridge)."
+            warn "Some standalone BD players may not read this disc."
+            run_ff xorriso -as cdrecord -v -sao dev="$burn_dev" "$ISO_OUT" || {
+                die "Burn failed with xorriso"
+            }
+        fi
+    else
+        # Direct pipe: genisoimage -udf → growisofs, no temp ISO
+        if ! command -v growisofs &>/dev/null; then
+            die "growisofs is required for --burn (install: sudo dnf install dvd+rw-tools)"
+        fi
+        if ! command -v genisoimage &>/dev/null; then
+            die "genisoimage is required for --burn (install: sudo dnf install genisoimage)"
+        fi
+        log "Piping to $burn_dev via growisofs (no temp ISO)..."
+        MKISOFS=genisoimage run_ff growisofs -dvd-compat -Z "$burn_dev" -udf -allow-limited-size -V "BD_SHRINK" "$DST" || {
             die "Burn failed with growisofs"
         }
-    else
-        warn "growisofs not found — burning with xorriso (no UDF bridge)."
-        warn "Some standalone BD players may not read this disc."
-        warn "Install dvd+rw-tools for better compatibility: sudo dnf install dvd+rw-tools"
-        log "Using xorriso cdrecord emulation..."
-        run_ff xorriso -as cdrecord -v -sao dev="$burn_dev" "$iso_file" || {
-            die "Burn failed with xorriso"
-        }
     fi
-
-    # ── Verify ───────────────────────────────────────────────────────────────
-    log "Verifying disc (MD5 checksum comparison)..."
-    run_ff xorriso -indev "$burn_dev" -check_md5 FAILURE -- 2>/dev/null || {
-        die "Disc verification failed — data may be corrupted"
-    }
-    info "Disc verification passed."
 
     # ── Eject ────────────────────────────────────────────────────────────────
     log "Ejecting $burn_dev..."
     eject "$burn_dev" 2>/dev/null || true
-
-    # ── Cleanup temp ISO ─────────────────────────────────────────────────────
-    if ! $OUTPUT_ISO && [[ -f "$iso_file" ]]; then
-        log "Removing temporary ISO: $iso_file"
-        rm -f "$iso_file"
-    fi
 }
 
 # ─── arg parsing ─────────────────────────────────────────────────────────────
@@ -662,6 +659,18 @@ def parse_mpls(path):
         })
         off += 2 + plen
 
+    # Skip subpaths to reach AppInfoPlayList
+    for _ in range(num_subpaths):
+        splen = struct.unpack_from('>H', data, off)[0]
+        off += 2 + splen
+
+    # Read PlayList_type from AppInfoPlayList (1 = menu/interactive)
+    playlist_type = 0
+    if off + 5 < len(data):
+        appinfo_len = struct.unpack_from('>I', data, off)[0]
+        if appinfo_len >= 5:
+            playlist_type = data[off + 5]
+
     marks = []
     if num_marks > 0:
         moff = pm_offset + 8
@@ -685,6 +694,7 @@ def parse_mpls(path):
         'duration': sum(i['duration'] for i in items),
         'chapters': len(chapters),
         'chapter_times': [round(t, 2) for t in chapter_times],
+        'playlist_type': playlist_type,
     }
 
 playlist_dir = sys.argv[1]
@@ -883,6 +893,7 @@ for pl_name, pl_data in playlists.items():
         'subpaths': pl_data['subpaths'],
         'clips': playlist_clips,
         'total_clip_dur': round(sum(item['duration'] for item in pl_data['playitems']), 1),
+        'playlist_type': pl_data.get('playlist_type', 0),
     }
     # Calculate total size from unique clips
     total_size = 0
@@ -938,6 +949,11 @@ for pl_name, pl_data in pl_sorted:
 
     for c in clip_list:
         orphan_clips.discard(c)
+
+    # PlayList_type 1 = menu (from MPLS AppInfoPlayList)
+    if pl_data.get('playlist_type') == 1:
+        menu_pls.append(pl_name)
+        continue
 
     # Check if any referenced clip has video
     has_video = False
@@ -1078,8 +1094,9 @@ def clips_for_playlists(pl_list):
     return result
 
 main_clips = clips_for_playlists(main_pls)
-extras_clips = clips_for_playlists(extras_pls)
+extras_clips = clips_for_playlists(extras_pls) - main_clips
 menu_clips = clips_for_playlists(menu_pls)
+extras_clips -= menu_clips  # never re-encode menu-adjacent clips
 
 # Menu clips: copy verbatim
 menu_size = sum(clips.get(c, {}).get('size_bytes', 0) for c in menu_clips)
@@ -1920,44 +1937,30 @@ else
 
 fi  # end if MOVIE_ONLY
 
-# Create ISO if requested (--iso) or needed (--burn)
-if $OUTPUT_ISO || $BURN; then
-    if $BURN && ! $OUTPUT_ISO; then
-        # Temp ISO for burning only — stored in work dir, removed after burn
-        ISO_OUT="${WORK_DIR}/bd_shrink_burn.iso"
-    else
-        ISO_OUT="${OUTPUT%.iso}.iso"
-    fi
-
+# Create ISO if explicitly requested (--iso)
+if $OUTPUT_ISO; then
+    ISO_OUT="${OUTPUT%.iso}.iso"
     log "Creating ISO: ${ISO_OUT}..."
 
-    if $BURN; then
-        # Burning requires xorriso with MD5 checksums for verification
-        if ! command -v xorriso &>/dev/null; then
-            die "xorriso is required for --burn (install: sudo dnf install xorriso)"
-        fi
-        xorriso -md5 on -outdev "$ISO_OUT" -volid "BD_SHRINK" -map "$DST" / -commit 2>/dev/null || {
-            die "ISO creation failed with xorriso (required for --burn)"
-        }
-    elif command -v xorriso &>/dev/null; then
-        xorriso -outdev "$ISO_OUT" -volid "BD_SHRINK" -map "$DST" / -commit 2>/dev/null || {
-            warn "ISO creation failed with xorriso"
-        }
-    elif command -v genisoimage &>/dev/null; then
-        genisoimage -udf -V "BD_SHRINK" -o "$ISO_OUT" "$DST" 2>/dev/null || {
+    if command -v genisoimage &>/dev/null; then
+        genisoimage -udf -allow-limited-size -V "BD_SHRINK" -o "$ISO_OUT" "$DST" 2>/dev/null || {
             warn "ISO creation failed with genisoimage"
         }
     elif command -v mkisofs &>/dev/null; then
         mkisofs -udf -V "BD_SHRINK" -o "$ISO_OUT" "$DST" 2>/dev/null || {
             warn "ISO creation failed with mkisofs"
         }
+    elif command -v xorriso &>/dev/null; then
+        xorriso -outdev "$ISO_OUT" -volid "BD_SHRINK" -map "$DST" / -commit 2>/dev/null || {
+            warn "ISO creation failed with xorriso"
+        }
     else
-        warn "No ISO creation tool found (xorriso/genisoimage/mkisofs). Install one and run:"
-        warn "  xorriso -outdev ${ISO_OUT} -volid 'BD_SHRINK' -map ${DST} / -commit"
+        warn "No ISO creation tool found (genisoimage/mkisofs/xorriso). Install one and run:"
+        warn "  genisoimage -udf -allow-limited-size -V 'BD_SHRINK' -o ${ISO_OUT} ${DST}"
     fi
 
-    if $BURN && [[ ! -f "$ISO_OUT" ]]; then
-        die "ISO creation failed — cannot proceed with --burn"
+    if [[ ! -f "$ISO_OUT" ]]; then
+        die "ISO creation failed"
     fi
 fi
 
