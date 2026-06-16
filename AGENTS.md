@@ -86,10 +86,21 @@ zsh 5.9 crashes non-deterministically when ANY child process exits. The script m
 
 When the shell crashes mid-encode, restarting the script resumes from where it left off (Python `run_ff` skips existing output files).
 
-## zsh-specific options
+### Known issue: SIGCHLD crashes persist
 
+Despite the mitigation above, zsh 5.9 still crashes non-deterministically (symptoms: "parse error near \n" at a nonexistent line number, or segfault). These are NOT syntax errors — they are the zsh SIGCHLD bug. The only reliable fix is to **rewrite the script in bash**. No zsh-specific features are actually used:
+
+```bash
+# zsh                          bash equivalent
+setopt SH_WORD_SPLIT           (default)
+setopt NULL_GLOB               shopt -s nullglob
+```
+
+Rewriting to bash would eliminate the crash entirely while preserving identical behavior.
+
+## zsh-specific options
 ```zsh
-setopt SH_WORD_SPLIT   # split unquoted $var on IFS (like bash)
+setopt SH_WORD_SPLIT   # split unquoted $var on IFS (like bash default)
 setopt NULL_GLOB       # unmatched globs → empty (like bash nullglob)
 ```
 
