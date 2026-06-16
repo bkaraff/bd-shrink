@@ -9,14 +9,14 @@ A Linux-native alternative to BD Rebuilder that uses `ffmpeg` + `tsMuxeR` to re-
 ## Quick Start
 
 ```bash
-# Prerequisites (see INSTALL.md)
-sudo dnf install ffmpeg libbluray-utils bc
+# Show required dependencies and install commands (no source/output needed)
+./bd_shrink.sh --install-deps
 
 # Movie-only backup — fit on BD25
 ./bd_shrink.sh -s /path/to/BDMV -o /output/movie -t 23 --movie-only
 
-# Full disc with menus (IGS discs only)
-./bd_shrink.sh -s /path/to/BDMV -o /output/full -t 23 -f
+# Full disc with menus (IGS discs only) — parent dir auto-names subfolder
+./bd_shrink.sh -s /path/to/BDMV -o /mnt/nvme/ -t 23 -f
 
 # Preview without encoding
 ./bd_shrink.sh -s /path/to/BDMV -o /tmp/test -n -f
@@ -73,8 +73,9 @@ Main bitrate:   17.53 Mbps  (to fill BD25)
 
 ## Output
 
-- **Folder**: Complete BDMV structure ready to burn with `mkudffs` + `growisofs`
-- **ISO** (`--iso`): Direct ISO output from `tsMuxeR`
+- **Folder**: Complete BDMV structure in a source-named subdirectory. When `-o` points to a parent directory (e.g., `/mnt/nvme/`), the script creates `<source-title>/` inside it with `BDMV/` and `CERTIFICATE/`. The `.work` directory lives as a sibling in the output root.
+- **ISO** (`--iso`): ISO file named after the source title (e.g., `<source-title>.iso`) containing only `BDMV/` and `CERTIFICATE/`. The `.work` directory is never included.
+- **Burn** (`--burn`): Burn output to BD-R disc via `growisofs` or `xorriso`. Same exclusion of work files applies.
 
 ## File structure of a typical BD50
 
@@ -101,10 +102,13 @@ CERTIFICATE/
 
 ```
   -s, --source DIR       Source BDMV folder (must contain index.bdmv)
-  -o, --output DIR       Output directory or .iso path
+  -o, --output DIR       Output directory (auto-creates source-named
+                           subfolder when pointed at a parent directory)
   -t, --target NUM       Target size in GB (default: 23 for BD25)
   --movie-only           Movie-only backup (no menus, fresh BD author)
   --iso                  Output ISO instead of BDMV folder
+  --burn                  Burn output to BD-R after validation
+  --burn-device DEV       Optical drive device path (auto-detected if omitted)
   --no-extras            Skip extras entirely
   --keep-one             Only keep the longest movie playlist
   --extras-scale WxH     Extras downscale resolution (default: 1280:720)
@@ -115,6 +119,7 @@ CERTIFICATE/
   --commentary-ab        Commentary/secondary audio bitrate (default: 128k)
   -f, --force            Overwrite output if it exists
   -n, --dry-run          Show what would be done without encoding
+      --install-deps     Show required tools and install commands, then exit
   -h, --help             Show this help
 ```
 
@@ -126,9 +131,14 @@ CERTIFICATE/
 | `tsMuxeR` | Blu-ray structure authoring (v2.7.0+) |
 | `bc` | Math calculations |
 | `python3` | MPLS binary parsing, data processing |
+| `systemd-run` | Transient service management (part of systemd) |
 | `libbluray-utils` | `bd_info` / `bd_list_titles` (optional) |
+| `growisofs` (from `dvd+rw-tools`) | BD-R burning with UDF bridge (optional, `--burn`) |
+| `genisoimage` | UDF ISO creation for `growisofs` (optional, `--burn`) |
+| `eject` (from `util-linux`) | Disc ejection after burn (optional, `--burn`) |
+| `vlc` or `mpv` + `libbluray` | Playback / testing output before burning (optional) |
 
-See [INSTALL.md](INSTALL.md) for setup instructions.
+See [INSTALL.md](INSTALL.md) for setup instructions, or run `./bd_shrink.sh --install-deps` to check for missing tools.
 
 ## How It Works
 

@@ -22,6 +22,31 @@ MOVIE_ONLY=false
 OUTPUT_ISO=false
 COMMENTARY_AUDIO_BITRATE="128k"
 USE_TUI=false
+INSTALL_DEPS=false
+BURN=false
+BURN_DEVICE=""
+
+# Default output directory when -o is omitted
+MOVIES_DIR="${HOME}/Movies"
+
+# Derive a clean title from the source path for auto-naming output
+get_source_title() {
+    local src="$1"
+    if [[ -d "$src" ]]; then
+        local dir="$src"
+        dir="${dir%/}"                 # strip trailing slash
+        [[ "$dir" == */BDMV ]] && dir="${dir%/BDMV}"
+        dir="${dir%/}"                 # strip any remaining trailing slash
+        local title="${dir##*/}"
+        title="${title//:/ -}"
+        printf '%s\n' "$title"
+    elif [[ -f "$src" ]]; then
+        local fname="${src##*/}"
+        printf '%s\n' "${fname%.*}"
+    else
+        printf '%s\n' "output"
+    fi
+}
 
 # Catppuccin Mocha true-color ANSI codes for TUI styling
 CCTP_RESET=$'\e[0m'
@@ -64,7 +89,7 @@ trap 'echo "FATAL: line $LINENO exit $?" >&2' ERR
 # The command runs as a transient systemd service, NOT as a child of bash.
 # Even if the shell crashes, the service continues to completion.
 run_ff() {
-    systemd-run --user --wait -q -u "bd_ff.${RANDOM}.$$" -- "$@"
+    systemd-run --user --wait -q -u "bd_ff.${RANDOM}.$$" --setenv=PATH=/usr/local/bin:/usr/bin:/bin -- "$@"
 }
 
 usage() {
@@ -96,6 +121,9 @@ Options:
   -n, --dry-run          Show what would be done without encoding
   -w, --work DIR         Working directory (default: <output>.work)
       --tui              Interactive TUI mode (requires gum)
+      --install-deps     Show required tools and install commands, then exit
+      --burn              Burn output to BD-R after validation
+      --burn-device DEV   Optical drive device path (auto-detected if omitted)
   -h, --help             Show this help
 EOF
     exit 1
@@ -122,63 +150,71 @@ run_tui() {
                 --affirmative "Continue" --negative "Exit" \
                 "Continue to source selection?" || exit 0
 
-            # If SOURCE_ROOT is saved, offer a fuzzy list of its contents first.
-            local selected=""
-            if [[ -n "$SOURCE_ROOT" ]] && [[ -d "$SOURCE_ROOT" ]]; then
-                gum style --foreground "#7f849c" "Looking in: ${SOURCE_ROOT}"
-                local dirs=("$SOURCE_ROOT"/*(/N) "$SOURCE_ROOT"/*.mkv(N) "$SOURCE_ROOT"/*.m2ts(N) "$SOURCE_ROOT"/*.ts(N) "$SOURCE_ROOT"/*.iso(N))
-                if [[ ${#dirs[@]} -gt 0 ]]; then
-                    typeset -a names
-                    for d in "${dirs[@]}"; do names+=("${d##*/}"); done
-                    local choice=$(print -l "${(@)names}" \
-                        | gum filter --header="SELECT SOURCE" --placeholder "Search sources (esc = browse file system)..." || true)
-                    if [[ -n "$choice" ]]; then
-                        selected="$SOURCE_ROOT/$choice"
+            # Retry until a valid source is selected
+            while true; do
+                local selected=""
+                if [[ -n "$SOURCE_ROOT" ]] && [[ -d "$SOURCE_ROOT" ]]; then
+                    gum style --foreground "#7f849c" "Looking in: ${SOURCE_ROOT}"
+                    local dirs=("$SOURCE_ROOT"/*(/N) "$SOURCE_ROOT"/*.mkv(N) "$SOURCE_ROOT"/*.m2ts(N) "$SOURCE_ROOT"/*.ts(N) "$SOURCE_ROOT"/*.iso(N))
+                    if [[ ${#dirs[@]} -gt 0 ]]; then
+                        typeset -a names
+                        for d in "${dirs[@]}"; do names+=("${d##*/}"); done
+                        local choice=$(print -l "${(@)names}" \
+                            | gum filter --header="SELECT SOURCE" --placeholder "Search sources (esc = browse file system)..." || true)
+                        if [[ -n "$choice" ]]; then
+                            selected="$SOURCE_ROOT/$choice"
+                        fi
                     fi
                 fi
-            fi
 
-            # Fall back to the file browser.
-            if [[ -z "$selected" ]]; then
-                local start_dir="$SOURCE_ROOT"
-                [[ -z "$start_dir" ]] && start_dir="/data-nvme1"
-                [[ -z "$start_dir" ]] && start_dir="${HOME}"
-                selected=$(gum file --directory --cursor="▸ " "$start_dir" \
-                    --header="SELECT SOURCE from ${start_dir} — ↑↓ move, → enter dir, ← go up, enter select") || exit 1
-            fi
-
-            # Detect the actual source inside the selected movie folder.
-            local movie_folder=""
-            if [[ -f "$selected/index.bdmv" ]]; then
-                SOURCE="$selected"
-                movie_folder="${selected:h}"
-            elif [[ -f "$selected/BDMV/index.bdmv" ]]; then
-                SOURCE="$selected/BDMV"
-                movie_folder="$selected"
-            elif [[ -f "$selected" ]]; then
-                SOURCE="$selected"
-                movie_folder="${selected:h}"
-                MOVIE_ONLY=true
-            else
-                typeset -a found_bdmv
-                found_bdmv=("$selected"/*/BDMV(N))
-                if [[ -n "${found_bdmv[1]:-}" ]] && [[ -f "${found_bdmv[1]}/index.bdmv" ]]; then
-                    SOURCE="${found_bdmv[1]}"
-                    movie_folder="${found_bdmv[1]:h}"
+                # Fall back to the file browser.
+                if [[ -z "$selected" ]]; then
+                    local start_dir="$SOURCE_ROOT"
+                    [[ -z "$start_dir" || ! -d "$start_dir" ]] && start_dir="/data-nvme1"
+                    [[ -z "$start_dir" || ! -d "$start_dir" ]] && start_dir="${HOME}"
+                    selected=$(gum file --directory --cursor="▸ " "$start_dir" \
+                        --header="SELECT SOURCE — ↑↓ move, → enter dir, ← go up, enter select") || exit 1
                 fi
-            fi
 
-            # If no BDMV, look for a video/ISO file directly inside the selected folder.
-            if [[ -z "$SOURCE" ]]; then
-                local videos=("$selected"/*.mkv(N) "$selected"/*.m2ts(N) "$selected"/*.ts(N) "$selected"/*.iso(N))
-                if [[ -n "${videos[1]:-}" ]]; then
-                    SOURCE="${videos[1]}"
+                # Detect the actual source inside the selected movie folder.
+                local movie_folder=""
+                if [[ -f "$selected/index.bdmv" ]]; then
+                    SOURCE="$selected"
+                    movie_folder="${selected:h}"
+                elif [[ -f "$selected/BDMV/index.bdmv" ]]; then
+                    SOURCE="$selected/BDMV"
                     movie_folder="$selected"
+                elif [[ -f "$selected" ]]; then
+                    SOURCE="$selected"
+                    movie_folder="${selected:h}"
                     MOVIE_ONLY=true
+                else
+                    typeset -a found_bdmv
+                    found_bdmv=("$selected"/*/BDMV(N))
+                    if [[ -n "${found_bdmv[1]:-}" ]] && [[ -f "${found_bdmv[1]}/index.bdmv" ]]; then
+                        SOURCE="${found_bdmv[1]}"
+                        movie_folder="${found_bdmv[1]:h}"
+                    fi
                 fi
-            fi
 
-            [[ -z "$SOURCE" ]] && die "No BDMV folder or video file found under $selected"
+                # If no BDMV, look for a video/ISO file directly inside the selected folder.
+                if [[ -z "$SOURCE" ]]; then
+                    local videos=("$selected"/*.mkv(N) "$selected"/*.m2ts(N) "$selected"/*.ts(N) "$selected"/*.iso(N))
+                    if [[ -n "${videos[1]:-}" ]]; then
+                        SOURCE="${videos[1]}"
+                        movie_folder="$selected"
+                        MOVIE_ONLY=true
+                    fi
+                fi
+
+                if [[ -n "$SOURCE" ]]; then
+                    break  # valid source found
+                fi
+
+                warn "No BDMV folder or video file found under $selected"
+                warn "Select the folder CONTAINING BDMV/ or index.bdmv, not its parent."
+                SOURCE_ROOT="$selected"  # retry from the selected directory
+            done
 
             # Remember the parent of the movie folder as SOURCE_ROOT.
             if [[ -n "$movie_folder" ]]; then
@@ -190,13 +226,8 @@ run_tui() {
 
         # ── Output ──
         if [[ -z "$OUTPUT" ]]; then
-            local default_out
-            if [[ -d "$SOURCE" ]]; then
-                default_out="${SOURCE%/BDMV}.bd25"
-                default_out="${default_out%/}.bd25"
-            else
-                default_out="${SOURCE%.*}.bd25"
-            fi
+            local source_title=$(get_source_title "$SOURCE")
+            local default_out="${MOVIES_DIR}/${source_title}"
             OUTPUT=$(gum input --placeholder "$default_out" --prompt "Output: ") || exit 1
             [[ -z "$OUTPUT" ]] && OUTPUT="$default_out"
         fi
@@ -305,6 +336,131 @@ run_tui() {
     done
 }
 
+show_install_deps() {
+    # Detect required and optional tools, print install commands for missing ones.
+    # Does NOT auto-install anything — just tells the user what to run.
+    local found=0 missing=0
+
+    echo "bd_shrink.sh — dependency check"
+    echo ""
+
+    # ── Required tools ──────────────────────────────────────────────────────
+    echo "Required tools:"
+    echo ""
+
+    # ffmpeg / ffprobe (usually from the same package)
+    local ffmpeg_ok=true
+    command -v ffmpeg &>/dev/null || ffmpeg_ok=false
+    command -v ffprobe &>/dev/null || ffmpeg_ok=false
+    if $ffmpeg_ok; then
+        echo "  ✓ ffmpeg + ffprobe"
+        ((++found))
+    else
+        echo "  ✗ ffmpeg / ffprobe"
+        echo "    sudo dnf install ffmpeg"
+        echo "    Note: ffmpeg requires the rpmfusion-free repo."
+        echo "    Enable it: sudo dnf install rpmfusion-free-release"
+        ((++missing))
+    fi
+
+    # tsMuxeR (GitHub binary only)
+    if command -v tsMuxeR &>/dev/null; then
+        echo "  ✓ tsMuxeR"
+        ((++found))
+    else
+        echo "  ✗ tsMuxeR"
+        echo "    # Download and install (GitHub binary, no dnf package):"
+        echo "    wget https://github.com/justdan96/tsMuxer/releases/download/2.7.0/tsMuxer-2.7.0-linux.zip"
+        echo "    unzip tsMuxer-2.7.0-linux.zip"
+        echo "    sudo cp tsMuxer/tsMuxeR /usr/local/bin/"
+        ((++missing))
+    fi
+
+    # bc
+    if command -v bc &>/dev/null; then
+        echo "  ✓ bc"
+        ((++found))
+    else
+        echo "  ✗ bc"
+        echo "    sudo dnf install bc"
+        ((++missing))
+    fi
+
+    # python3 + stdlib modules
+    if command -v python3 &>/dev/null && python3 -c "import json, struct, os, sys" 2>/dev/null; then
+        echo "  ✓ python3 (with json, struct, os, sys)"
+        ((++found))
+    else
+        echo "  ✗ python3"
+        echo "    sudo dnf install python3"
+        ((++missing))
+    fi
+
+    # systemd-run (should always be present)
+    if command -v systemd-run &>/dev/null; then
+        echo "  ✓ systemd-run"
+        ((++found))
+    else
+        echo "  ✗ systemd-run"
+        echo "    sudo dnf install systemd"
+        ((++missing))
+    fi
+
+    echo ""
+    echo "Optional tools:"
+    echo ""
+
+    # gum (TUI mode)
+    if command -v gum &>/dev/null; then
+        echo "  ✓ gum  (TUI mode)"
+    else
+        echo "  ✗ gum  (TUI mode) — sudo dnf install gum"
+    fi
+
+    # genisoimage (--iso output, --burn UDF filesystem)
+    if command -v genisoimage &>/dev/null; then
+        echo "  ✓ genisoimage  (--iso output, --burn UDF)"
+    else
+        echo "  ✗ genisoimage  (--iso output, --burn) — sudo dnf install genisoimage"
+    fi
+
+    # xorriso (--iso output fallback, no UDF)
+    if command -v xorriso &>/dev/null; then
+        echo "  ✓ xorriso  (--iso output, fallback)"
+    else
+        echo "  ✗ xorriso  (--iso output, fallback) — sudo dnf install xorriso"
+    fi
+
+    # growisofs (--burn, preferred for UDF bridge)
+    if command -v growisofs &>/dev/null; then
+        echo "  ✓ growisofs  (--burn, from dvd+rw-tools)"
+    else
+        echo "  ✗ growisofs  (--burn) — sudo dnf install dvd+rw-tools"
+    fi
+
+    # eject (--burn, disc ejection after verification)
+    if command -v eject &>/dev/null; then
+        echo "  ✓ eject  (--burn)"
+    else
+        echo "  ✗ eject  (--burn) — part of util-linux (usually pre-installed on Linux; not needed on macOS)"
+    fi
+
+    # Playback tools (vlc / mpv + libbluray)
+    if command -v vlc &>/dev/null || command -v mpv &>/dev/null; then
+        echo "  ✓ vlc / mpv  (playback)"
+    else
+        echo "  - vlc / mpv  (playback) — sudo dnf install vlc (or mpv)"
+    fi
+
+    echo ""
+    echo "Summary: ${found} of $((found + missing)) required tools found."
+    if [[ ${missing} -gt 0 ]]; then
+        echo "Install the missing tools using the commands above, then re-run this script."
+    fi
+
+    exit 0
+}
+
 check_deps() {
     local missing=()
     for cmd in run_ff ffmpeg ffprobe tsMuxeR bc python3; do
@@ -316,6 +472,70 @@ check_deps() {
     if ! python3 -c "import json, struct, os, sys" 2>/dev/null; then
         die "Python3 missing standard library modules"
     fi
+}
+
+burn_output() {
+    # Burn BDMV to BD-R. Two modes:
+    #   --iso: burn from pre-created ISO file (for archival + burn)
+    #   no --iso: pipe genisoimage -udf directly to growisofs (no temp ISO)
+
+    local burn_dev="$BURN_DEVICE"
+
+    # ── Auto-detect burn device if not specified ────────────────────────────
+    if [[ -z "$burn_dev" ]]; then
+        for dev in /dev/sr*; do
+            if [[ -b "$dev" ]]; then
+                burn_dev="$dev"
+                break
+            fi
+        done
+        if [[ -z "$burn_dev" ]]; then
+            die "No optical drive found. Use --burn-device to specify one (e.g., /dev/sr0)"
+        fi
+    fi
+
+    # ── Validate burn device ─────────────────────────────────────────────────
+    if [[ ! -b "$burn_dev" ]]; then
+        die "Burn device not found or not a block device: $burn_dev"
+    fi
+
+    # ── Burn from ISO (--iso mode) or direct pipe ───────────────────────────
+    if $OUTPUT_ISO; then
+        # Burn from pre-created ISO file
+        if [[ ! -f "$ISO_OUT" ]]; then
+            die "No ISO file found for burning (expected: $ISO_OUT)"
+        fi
+        log "Burning ISO to $burn_dev..."
+        if command -v growisofs &>/dev/null; then
+            run_ff growisofs -dvd-compat -Z "${burn_dev}=${ISO_OUT}" || {
+                die "Burn failed with growisofs"
+            }
+        else
+            warn "growisofs not found — falling back to xorriso cdrecord (no UDF bridge)."
+            warn "Some standalone BD players may not read this disc."
+            run_ff xorriso -as cdrecord -v -sao dev="$burn_dev" "$ISO_OUT" || {
+                die "Burn failed with xorriso"
+            }
+        fi
+    else
+        # Direct pipe: genisoimage -udf → growisofs, no temp ISO
+        if ! command -v growisofs &>/dev/null; then
+            die "growisofs is required for --burn (install: sudo dnf install dvd+rw-tools)"
+        fi
+        if ! command -v genisoimage &>/dev/null; then
+            die "genisoimage is required for --burn (install: sudo dnf install genisoimage)"
+        fi
+        log "Piping to $burn_dev via growisofs (no temp ISO)..."
+        # Only stream BDMV/CERTIFICATE to the drive, not .work or other siblings
+        MKISOFS=genisoimage run_ff growisofs -dvd-compat -Z "$burn_dev" -udf -allow-limited-size -V "BD_SHRINK" \
+            -graft-points BDMV="$DST/BDMV" CERTIFICATE="$DST/CERTIFICATE" || {
+            die "Burn failed with growisofs"
+        }
+    fi
+
+    # ── Eject ────────────────────────────────────────────────────────────────
+    log "Ejecting $burn_dev..."
+    eject "$burn_dev" 2>/dev/null || true
 }
 
 # ─── arg parsing ─────────────────────────────────────────────────────────────
@@ -344,10 +564,18 @@ while [[ $# -gt 0 ]]; do
         -n|--dry-run)      DRY_RUN=true; shift ;;
         -w|--work)         WORK_DIR="$2"; shift 2 ;;
         --tui)             USE_TUI=true; shift ;;
+        --install-deps)    INSTALL_DEPS=true; shift ;;
+        --burn)            BURN=true; shift ;;
+        --burn-device)     BURN_DEVICE="$2"; shift 2 ;;
         -h|--help)         usage ;;
         *)                 die "Unknown option: $1" ;;
     esac
 done
+
+# --install-deps: show dependency info and exit (no source/output required)
+if $INSTALL_DEPS; then
+    show_install_deps
+fi
 
 # Launch interactive TUI if requested, or if required args are missing and we
 # have an interactive terminal with gum available.
@@ -356,13 +584,19 @@ if $USE_TUI || { [[ -z "$SOURCE" || -z "$OUTPUT" ]] && [[ -t 1 ]] && command -v 
     run_tui
 fi
 
+# Auto-derive output path from source if not provided
+if [[ -z "$OUTPUT" ]]; then
+    local source_title=$(get_source_title "$SOURCE")
+    OUTPUT="${MOVIES_DIR}/${source_title}"
+    log "Output not specified — defaulting to ${OUTPUT}"
+fi
+
 # --movie-only implies --keep-one (only the first main playlist is encoded)
 if $MOVIE_ONLY; then
     KEEP_ONE=true
 fi
 
 [[ -z "$SOURCE" ]] && die "Source folder required (-s)"
-[[ -z "$OUTPUT" ]] && die "Output folder required (-o)"
 
 MKV_INPUT=false
 if [[ -f "$SOURCE" ]] && [[ "$SOURCE" == *.mkv ]]; then
@@ -376,6 +610,22 @@ if ! $MKV_INPUT; then
     [[ ! -f "$SOURCE/index.bdmv" ]] && die "Source must contain index.bdmv (point to the BDMV folder)"
     [[ ! -d "$SOURCE/PLAYLIST" ]] && die "Source must contain PLAYLIST/ directory"
     [[ ! -d "$SOURCE/STREAM" ]] && die "Source must contain STREAM/ directory"
+fi
+
+# If OUTPUT points to an existing parent directory (not already a BD output),
+# create/use a source-named subdirectory so the actual output is self-contained
+# and the work directory remains a sibling in the output root.
+if [[ -d "$OUTPUT" ]] && [[ ! -d "$OUTPUT/BDMV" ]]; then
+    local source_title=$(get_source_title "$SOURCE")
+    local output_candidate="${OUTPUT%/}/${source_title}"
+    if [[ -d "$output_candidate" ]]; then
+        OUTPUT="$output_candidate"
+        log "Output directory is a parent folder — using existing ${OUTPUT}"
+    elif $FORCE; then
+        mkdir -p "$output_candidate" || die "Cannot create output subdirectory: ${output_candidate}"
+        OUTPUT="$output_candidate"
+        log "Output directory is a parent folder — creating ${OUTPUT}"
+    fi
 fi
 
 if [[ -d "$OUTPUT" ]] && ! $FORCE; then
@@ -437,6 +687,18 @@ def parse_mpls(path):
         })
         off += 2 + plen
 
+    # Skip subpaths to reach AppInfoPlayList
+    for _ in range(num_subpaths):
+        splen = struct.unpack_from('>H', data, off)[0]
+        off += 2 + splen
+
+    # Read PlayList_type from AppInfoPlayList (1 = menu/interactive)
+    playlist_type = 0
+    if off + 5 < len(data):
+        appinfo_len = struct.unpack_from('>I', data, off)[0]
+        if appinfo_len >= 5:
+            playlist_type = data[off + 5]
+
     marks = []
     if num_marks > 0:
         moff = pm_offset + 8
@@ -460,6 +722,7 @@ def parse_mpls(path):
         'duration': sum(i['duration'] for i in items),
         'chapters': len(chapters),
         'chapter_times': [round(t, 2) for t in chapter_times],
+        'playlist_type': playlist_type,
     }
 
 playlist_dir = sys.argv[1]
@@ -658,6 +921,7 @@ for pl_name, pl_data in playlists.items():
         'subpaths': pl_data['subpaths'],
         'clips': playlist_clips,
         'total_clip_dur': round(sum(item['duration'] for item in pl_data['playitems']), 1),
+        'playlist_type': pl_data.get('playlist_type', 0),
     }
     # Calculate total size from unique clips
     total_size = 0
@@ -713,6 +977,11 @@ for pl_name, pl_data in pl_sorted:
 
     for c in clip_list:
         orphan_clips.discard(c)
+
+    # PlayList_type 1 = menu (from MPLS AppInfoPlayList)
+    if pl_data.get('playlist_type') == 1:
+        menu_pls.append(pl_name)
+        continue
 
     # Check if any referenced clip has video
     has_video = False
@@ -853,8 +1122,9 @@ def clips_for_playlists(pl_list):
     return result
 
 main_clips = clips_for_playlists(main_pls)
-extras_clips = clips_for_playlists(extras_pls)
+extras_clips = clips_for_playlists(extras_pls) - main_clips
 menu_clips = clips_for_playlists(menu_pls)
+extras_clips -= menu_clips  # never re-encode menu-adjacent clips
 
 # Menu clips: copy verbatim
 menu_size = sum(clips.get(c, {}).get('size_bytes', 0) for c in menu_clips)
@@ -1193,6 +1463,21 @@ def get_sub_codecs(clip):
     except:
         return []
 
+def get_audio_codecs(clip):
+    """Return list of audio codec names (e.g. 'ac3', 'dts', 'mp3') for a clip."""
+    cpath = os.path.join(clips_dir, '{}.json'.format(clip))
+    if not os.path.isfile(cpath):
+        return []
+    try:
+        d = json.load(open(cpath))
+        codecs = []
+        for s in d.get('streams', []):
+            if s.get('codec_type') == 'audio':
+                codecs.append(s.get('codec_name', '?'))
+        return codecs
+    except:
+        return []
+
 def sub_ext(codec):
     if codec in ('subrip', 'srt', 'text'):
         return 'srt'
@@ -1255,15 +1540,21 @@ if not no_extras and not movie_only:
         # Audio extraction
         audio_tracks = 0
         if src_aud > 0:
-            audio_args = ['ffmpeg', '-y', '-v', 'error', '-i', src]
+            audio_codecs = get_audio_codecs(clip)
+            audio_args = ['ffmpeg', '-y', '-v', 'error', '-fflags', '+genpts', '-i', src]
+            actual_audio_idx = 0
             for ai in range(src_aud):
+                codec = audio_codecs[ai] if ai < len(audio_codecs) else '?'
+                if codec in ('mp3', 'mp3float', 'mp2', 'mp2float'):
+                    sys.stderr.write('    skipping MPEG audio track {}\n'.format(ai))
+                    continue
                 audio_args += ['-map', '0:a:{}'.format(ai), '-c:a', 'ac3',
                                '-b:a', extras_audio_bitrate,
-                               os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, ai))]
-            if run_ff(audio_args):
-                audio_tracks = src_aud
-                # Verify all files exist
-                for ai in range(src_aud):
+                               os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, actual_audio_idx))]
+                actual_audio_idx += 1
+            if actual_audio_idx > 0 and run_ff(audio_args):
+                audio_tracks = actual_audio_idx
+                for ai in range(actual_audio_idx):
                     if not os.path.isfile(os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, ai))):
                         audio_tracks = 0
                         break
@@ -1291,10 +1582,7 @@ if not no_extras and not movie_only:
                     sub_tracks = actual_sub_idx
 
         if audio_tracks == 0:
-            # Copy original clip
-            subprocess.run(['cp', src, os.path.join(encode_dir, '{}.m2ts'.format(clip))], timeout=300)
-            sys.stderr.write('  (copied original)\n')
-            continue
+            sys.stderr.write('  (video-only)\n')
 
         # Video encoding
         video_filter = []
@@ -1329,15 +1617,21 @@ if main_clips:
         # Audio extraction
         audio_tracks = 0
         if src_aud > 0:
-            audio_args = ['ffmpeg', '-y', '-v', 'error', '-i', src,
-                          '-map', '0:a:0', '-c:a', 'ac3', '-b:a', main_audio_bitrate,
-                          os.path.join(encode_dir, '{}_audio_0.ac3'.format(clip))]
-            for ai in range(1, src_aud):
+            audio_codecs = get_audio_codecs(clip)
+            audio_args = ['ffmpeg', '-y', '-v', 'error', '-fflags', '+genpts', '-i', src]
+            actual_audio_idx = 0
+            for ai in range(src_aud):
+                codec = audio_codecs[ai] if ai < len(audio_codecs) else '?'
+                if codec in ('mp3', 'mp3float', 'mp2', 'mp2float'):
+                    sys.stderr.write('    skipping MPEG audio track {}\n'.format(ai))
+                    continue
+                bitrate = main_audio_bitrate if actual_audio_idx == 0 else commentary_audio_bitrate
                 audio_args += ['-map', '0:a:{}'.format(ai), '-c:a', 'ac3',
-                               '-b:a', commentary_audio_bitrate,
-                               os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, ai))]
-            if run_ff(audio_args):
-                audio_tracks = src_aud
+                               '-b:a', bitrate,
+                               os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, actual_audio_idx))]
+                actual_audio_idx += 1
+            if actual_audio_idx > 0 and run_ff(audio_args):
+                audio_tracks = actual_audio_idx
 
         # Subtitle extraction
         sub_tracks = 0
@@ -1671,26 +1965,44 @@ else
 
 fi  # end if MOVIE_ONLY
 
-# Create ISO if requested (wraps the BDMV folder created above)
+# Ensure CERTIFICATE exists before ISO/burn phases (tsMuxeR creates it with --blu-ray,
+# but this guarantees it for all paths including edge cases)
+mkdir -p "$DST/CERTIFICATE"
+
+# Create ISO if explicitly requested (--iso)
 if $OUTPUT_ISO; then
-    ISO_OUT="${OUTPUT%.iso}.iso"
+    if [[ "$OUTPUT" == *.iso ]]; then
+        ISO_OUT="$OUTPUT"
+    else
+        local iso_title=$(get_source_title "$SOURCE")
+        ISO_OUT="${OUTPUT%/}/${iso_title}.iso"
+    fi
     log "Creating ISO: ${ISO_OUT}..."
 
-    if command -v xorriso &>/dev/null; then
-        xorriso -outdev "$ISO_OUT" -volid "BD_SHRINK" -map "$DST" / -commit 2>/dev/null || {
-            warn "ISO creation failed with xorriso"
-        }
-    elif command -v genisoimage &>/dev/null; then
-        genisoimage -udf -V "BD_SHRINK" -o "$ISO_OUT" "$DST" 2>/dev/null || {
+    # Only include BDMV and CERTIFICATE in the ISO; never include the .work directory
+    if command -v genisoimage &>/dev/null; then
+        genisoimage -udf -allow-limited-size -V "BD_SHRINK" -o "$ISO_OUT" \
+            -graft-points BDMV="$DST/BDMV" CERTIFICATE="$DST/CERTIFICATE" 2>/dev/null || {
             warn "ISO creation failed with genisoimage"
         }
     elif command -v mkisofs &>/dev/null; then
-        mkisofs -udf -V "BD_SHRINK" -o "$ISO_OUT" "$DST" 2>/dev/null || {
+        mkisofs -udf -V "BD_SHRINK" -o "$ISO_OUT" \
+            -graft-points BDMV="$DST/BDMV" CERTIFICATE="$DST/CERTIFICATE" 2>/dev/null || {
             warn "ISO creation failed with mkisofs"
         }
+    elif command -v xorriso &>/dev/null; then
+        xorriso -outdev "$ISO_OUT" -volid "BD_SHRINK" \
+            -map "$DST/BDMV" /BDMV -map "$DST/CERTIFICATE" /CERTIFICATE -commit 2>/dev/null || {
+            warn "ISO creation failed with xorriso"
+        }
     else
-        warn "No ISO creation tool found (xorriso/genisoimage/mkisofs). Install one and run:"
-        warn "  xorriso -outdev ${ISO_OUT} -volid 'BD_SHRINK' -map ${DST} / -commit"
+        warn "No ISO creation tool found (genisoimage/mkisofs/xorriso). Install one and run:"
+        warn "  genisoimage -udf -allow-limited-size -V 'BD_SHRINK' -o ${ISO_OUT} \\"
+        warn "    -graft-points BDMV=${DST}/BDMV CERTIFICATE=${DST}/CERTIFICATE"
+    fi
+
+    if [[ ! -f "$ISO_OUT" ]]; then
+        die "ISO creation failed"
     fi
 fi
 
@@ -1725,6 +2037,11 @@ if [[ -d "$DST" ]] && [[ -d "$DST/BDMV" ]]; then
     fi
 fi
 
+# ─── Burn ──────────────────────────────────────────────────────────────────────
+if $BURN; then
+    burn_output
+fi
+
 # ─── Done ─────────────────────────────────────────────────────────────────────
 log "Done! Output: $DST"
 if $HAS_BDJ && ! $MOVIE_ONLY; then
@@ -1733,7 +2050,9 @@ elif $MOVIE_ONLY; then
     info "Movie-only — no BD-J concerns."
 fi
 log "Working files retained at: $WORK_DIR (delete manually when satisfied)"
-log "IMPORTANT: Test the output in VLC or mpv before burning to disc!"
+if ! $BURN; then
+    log "IMPORTANT: Test the output in VLC or mpv before burning to disc!"
+fi
 
 # Cleanup temp directories
 rm -rf "${REBUILD_DIR:-}" 2>/dev/null || true
