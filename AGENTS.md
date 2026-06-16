@@ -34,6 +34,8 @@ zsh -n bd_shrink.sh
 
 `--iso` works with any mode (surgical and movie-only), not just `--movie-only`.
 
+When `-o` points to an existing directory that doesn't already contain `BDMV/`, the script auto-creates a source-named subdirectory (e.g., `-o /mnt/root/` → `/mnt/root/<source-title>/`). This keeps the work directory as a true sibling in the output root. Gated on `-f`.
+
 ## Architecture
 
 Single file `bd_shrink.sh`. Shebang: `#!/usr/bin/env zsh`. No separate library files.
@@ -114,7 +116,9 @@ setopt NULL_GLOB       # unmatched globs → empty (like bash nullglob)
 
 ## Work directories
 
-Default: `<output>.work` (sibling of output, NOT inside it — avoids inflating size check). Configurable via `-w / --work`.
+Default: `${OUTPUT}.work` (sibling of output, NOT inside it). Configurable via `-w / --work`.
+
+When `-o` points to a parent directory (existing, no `BDMV/`), the script auto-creates a source-named subdirectory so the work directory stays a sibling in the output root rather than mixed in with BDMV/CERTIFICATE.
 
 ## Logging
 
@@ -145,6 +149,7 @@ When run without `-s`/`-o` in an interactive terminal with `gum` installed, the 
 - **Main movie classification** prefers the largest long playlist by total size, not the longest by duration. Some discs have bogus playlists that repeat a short clip hundreds of times, producing a huge duration but tiny size; these are now classified as extras.
 - In zsh, `local` outside a function behaves like a regular assignment. The surgical rebuild block uses `local` at top-level — this is safe but non-idiomatic.
 - **Pass 2 encoding validation**: After pass 2, the script validates `.h264` output by checking for an Annex B start code (`\x00\x00\x00` or `\x00\x00\x01`) in the first bytes. Corrupt files (e.g. from VC-1 decode failures) are removed so they don't reach tsMuxeR.
+- `get_source_title` strips trailing slashes from source paths so `/.../BDMV/` returns the parent directory name (previously returned an empty title).
 
 ### Known issues
 
@@ -160,7 +165,7 @@ Burns output BDMV folder directly to BD-R. Two modes:
 - **`--burn` alone**: Pipes `genisoimage -udf` directly into `growisofs` — **no temp ISO created**. This avoids duplicating the ~22GB output.
 - **`--burn --iso`**: Creates an ISO file with `genisoimage -udf` first (for archival), then burns from the ISO.
 
-Both modes produce UDF-formatted discs (via `genisoimage -udf -allow-limited-size`). The `-allow-limited-size` flag is required because M2TS files on BD often exceed 4GiB. Previous xorriso-based approach produced plain ISO 9660 (no UDF) — discs showed as "data" in BD players.
+Both modes produce UDF-formatted discs (via `genisoimage -udf -allow-limited-size`). The `-allow-limited-size` flag is required because M2TS files on BD often exceed 4GiB. Only `BDMV/` and `CERTIFICATE/` are included in the ISO/disc (via `--graft-points` for genisoimage/mkisofs, `-map` for xorriso); the `.work` directory is never included.
 
 Key details:
 - `genisoimage` and `growisofs` are required for `--burn` (direct pipe mode)
@@ -169,6 +174,8 @@ Key details:
 - Without `growisofs`, falls back to `xorriso -as cdrecord` for ISO file mode only (no UDF)
 - `--burn-device /dev/sr0` specifies the optical drive; auto-detected if omitted
 - No MD5 verification (genisoimage lacks `-md5` support; growisofs handles burn verification internally for BD-R)
+- ISO filenames use the source title (e.g., `The_Himalayan_1976.iso`) rather than a hidden `.iso` file
+- `mkdir -p "$DST/CERTIFICATE"` runs unconditionally before ISO/burn phases to guarantee the directory exists regardless of output mode
 
 ### Menu preservation (surgical mode) — IMPLEMENTED
 

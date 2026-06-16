@@ -34,7 +34,9 @@ get_source_title() {
     local src="$1"
     if [[ -d "$src" ]]; then
         local dir="$src"
+        dir="${dir%/}"                 # strip trailing slash
         [[ "$dir" == */BDMV ]] && dir="${dir%/BDMV}"
+        dir="${dir%/}"                 # strip any remaining trailing slash
         local title="${dir##*/}"
         title="${title//:/ -}"
         printf '%s\n' "$title"
@@ -524,7 +526,9 @@ burn_output() {
             die "genisoimage is required for --burn (install: sudo dnf install genisoimage)"
         fi
         log "Piping to $burn_dev via growisofs (no temp ISO)..."
-        MKISOFS=genisoimage run_ff growisofs -dvd-compat -Z "$burn_dev" -udf -allow-limited-size -V "BD_SHRINK" "$DST" || {
+        # Only stream BDMV/CERTIFICATE to the drive, not .work or other siblings
+        MKISOFS=genisoimage run_ff growisofs -dvd-compat -Z "$burn_dev" -udf -allow-limited-size -V "BD_SHRINK" \
+            -graft-points BDMV="$DST/BDMV" CERTIFICATE="$DST/CERTIFICATE" || {
             die "Burn failed with growisofs"
         }
     fi
@@ -606,6 +610,22 @@ if ! $MKV_INPUT; then
     [[ ! -f "$SOURCE/index.bdmv" ]] && die "Source must contain index.bdmv (point to the BDMV folder)"
     [[ ! -d "$SOURCE/PLAYLIST" ]] && die "Source must contain PLAYLIST/ directory"
     [[ ! -d "$SOURCE/STREAM" ]] && die "Source must contain STREAM/ directory"
+fi
+
+# If OUTPUT points to an existing parent directory (not already a BD output),
+# create/use a source-named subdirectory so the actual output is self-contained
+# and the work directory remains a sibling in the output root.
+if [[ -d "$OUTPUT" ]] && [[ ! -d "$OUTPUT/BDMV" ]]; then
+    local source_title=$(get_source_title "$SOURCE")
+    local output_candidate="${OUTPUT%/}/${source_title}"
+    if [[ -d "$output_candidate" ]]; then
+        OUTPUT="$output_candidate"
+        log "Output directory is a parent folder — using existing ${OUTPUT}"
+    elif $FORCE; then
+        mkdir -p "$output_candidate" || die "Cannot create output subdirectory: ${output_candidate}"
+        OUTPUT="$output_candidate"
+        log "Output directory is a parent folder — creating ${OUTPUT}"
+    fi
 fi
 
 if [[ -d "$OUTPUT" ]] && ! $FORCE; then
@@ -1945,26 +1965,40 @@ else
 
 fi  # end if MOVIE_ONLY
 
+# Ensure CERTIFICATE exists before ISO/burn phases (tsMuxeR creates it with --blu-ray,
+# but this guarantees it for all paths including edge cases)
+mkdir -p "$DST/CERTIFICATE"
+
 # Create ISO if explicitly requested (--iso)
 if $OUTPUT_ISO; then
-    ISO_OUT="${OUTPUT%.iso}.iso"
+    if [[ "$OUTPUT" == *.iso ]]; then
+        ISO_OUT="$OUTPUT"
+    else
+        local iso_title=$(get_source_title "$SOURCE")
+        ISO_OUT="${OUTPUT%/}/${iso_title}.iso"
+    fi
     log "Creating ISO: ${ISO_OUT}..."
 
+    # Only include BDMV and CERTIFICATE in the ISO; never include the .work directory
     if command -v genisoimage &>/dev/null; then
-        genisoimage -udf -allow-limited-size -V "BD_SHRINK" -o "$ISO_OUT" "$DST" 2>/dev/null || {
+        genisoimage -udf -allow-limited-size -V "BD_SHRINK" -o "$ISO_OUT" \
+            -graft-points BDMV="$DST/BDMV" CERTIFICATE="$DST/CERTIFICATE" 2>/dev/null || {
             warn "ISO creation failed with genisoimage"
         }
     elif command -v mkisofs &>/dev/null; then
-        mkisofs -udf -V "BD_SHRINK" -o "$ISO_OUT" "$DST" 2>/dev/null || {
+        mkisofs -udf -V "BD_SHRINK" -o "$ISO_OUT" \
+            -graft-points BDMV="$DST/BDMV" CERTIFICATE="$DST/CERTIFICATE" 2>/dev/null || {
             warn "ISO creation failed with mkisofs"
         }
     elif command -v xorriso &>/dev/null; then
-        xorriso -outdev "$ISO_OUT" -volid "BD_SHRINK" -map "$DST" / -commit 2>/dev/null || {
+        xorriso -outdev "$ISO_OUT" -volid "BD_SHRINK" \
+            -map "$DST/BDMV" /BDMV -map "$DST/CERTIFICATE" /CERTIFICATE -commit 2>/dev/null || {
             warn "ISO creation failed with xorriso"
         }
     else
         warn "No ISO creation tool found (genisoimage/mkisofs/xorriso). Install one and run:"
-        warn "  genisoimage -udf -allow-limited-size -V 'BD_SHRINK' -o ${ISO_OUT} ${DST}"
+        warn "  genisoimage -udf -allow-limited-size -V 'BD_SHRINK' -o ${ISO_OUT} \\"
+        warn "    -graft-points BDMV=${DST}/BDMV CERTIFICATE=${DST}/CERTIFICATE"
     fi
 
     if [[ ! -f "$ISO_OUT" ]]; then
