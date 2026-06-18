@@ -100,7 +100,7 @@ When source/output are omitted and gum is available, an interactive TUI
 is launched automatically. Pass --tui to force TUI mode even with args.
 
 Required:
-  -s, --source DIR|FILE   Source BDMV folder (must contain index.bdmv) or .mkv file
+  -s, --source DIR|FILE   Source BDMV folder (must contain index.bdmv) or video file (.mkv/.mp4/.m4v)
   -o, --output DIR       Output directory (must not exist unless -f)
 
 Options:
@@ -155,7 +155,7 @@ run_tui() {
                 local selected=""
                 if [[ -n "$SOURCE_ROOT" ]] && [[ -d "$SOURCE_ROOT" ]]; then
                     gum style --foreground "#7f849c" "Looking in: ${SOURCE_ROOT}"
-                    local dirs=("$SOURCE_ROOT"/*/ "$SOURCE_ROOT"/*.mkv "$SOURCE_ROOT"/*.m2ts "$SOURCE_ROOT"/*.ts "$SOURCE_ROOT"/*.iso)
+                    local dirs=("$SOURCE_ROOT"/*/ "$SOURCE_ROOT"/*.mkv "$SOURCE_ROOT"/*.mp4 "$SOURCE_ROOT"/*.m4v "$SOURCE_ROOT"/*.m2ts "$SOURCE_ROOT"/*.ts "$SOURCE_ROOT"/*.iso)
                     if [[ ${#dirs[@]} -gt 0 ]]; then
                         declare -a names
                         names=()
@@ -200,7 +200,7 @@ run_tui() {
 
                 # If no BDMV, look for a video/ISO file directly inside the selected folder.
                 if [[ -z "$SOURCE" ]]; then
-                    local videos=("$selected"/*.mkv "$selected"/*.m2ts "$selected"/*.ts "$selected"/*.iso)
+                    local videos=("$selected"/*.mkv "$selected"/*.mp4 "$selected"/*.m4v "$selected"/*.m2ts "$selected"/*.ts "$selected"/*.iso)
                     if [[ -n "${videos[0]:-}" ]]; then
                         SOURCE="${videos[0]}"
                         movie_folder="$selected"
@@ -581,10 +581,10 @@ done
 # Derive codec-specific variables
 if [[ "$CODEC" == "hevc" ]]; then
     VIDEO_EXT="hevc"
-    TRACK_TYPE="HEVC"
+    MUX_VIDEO_TYPE="V_MPEGH/ISO/HEVC"
 else
     VIDEO_EXT="h264"
-    TRACK_TYPE="AVC"
+    MUX_VIDEO_TYPE="V_MPEG4/ISO/AVC"
 fi
 
 # --install-deps: show dependency info and exit (no source/output required)
@@ -614,11 +614,39 @@ fi
 [[ -z "$SOURCE" ]] && die "Source folder required (-s)"
 
 MKV_INPUT=false
-if [[ -f "$SOURCE" ]] && [[ "${SOURCE,,}" == *.mkv ]]; then
+if [[ -f "$SOURCE" ]] && [[ "${SOURCE,,}" =~ \.(mkv|mp4|m4v)$ ]]; then
     MKV_INPUT=true
     MOVIE_ONLY=true
-elif [[ -f "$SOURCE" ]]; then
-    die "Source must be a BDMV folder (with index.bdmv) or a .mkv file"
+fi
+
+# Auto-detect BDMV inside a parent directory, or video file inside a directory
+if [[ -d "$SOURCE" ]] && [[ ! -f "$SOURCE/index.bdmv" ]] && ! $MKV_INPUT; then
+    if [[ -f "$SOURCE/BDMV/index.bdmv" ]]; then
+        SOURCE="$SOURCE/BDMV"
+        log "Auto-detected BDMV at: $SOURCE"
+    else
+        detected=false
+        for bdmv_candidate in "$SOURCE"/*/BDMV/index.bdmv; do
+            [[ -f "$bdmv_candidate" ]] || continue
+            SOURCE="${bdmv_candidate%/index.bdmv}"
+            log "Auto-detected BDMV at: $SOURCE"
+            detected=true
+            break
+        done
+        if ! $detected; then
+            for vid in "$SOURCE"/*.mkv "$SOURCE"/*.mp4 "$SOURCE"/*.m4v; do
+                [[ -f "$vid" ]] || continue
+                SOURCE="$vid"
+                MKV_INPUT=true
+                log "Auto-detected video file: $SOURCE"
+                break
+            done
+        fi
+    fi
+fi
+
+if [[ ! -d "$SOURCE" ]] && ! $MKV_INPUT; then
+    die "Source must be a BDMV folder (with index.bdmv) or video file (.mkv/.mp4/.m4v)"
 fi
 
 if ! $MKV_INPUT; then
@@ -758,10 +786,10 @@ PYEOF
 INVENTORY_FILE="$WORK_DIR/inventory.json"
 
 if $MKV_INPUT; then
-    # MKV: create synthetic playlists.json with single clip "00000"
+    # Single-file video: create synthetic playlists.json with single clip "00000"
     python3 - "$SOURCE" << 'PYEOF' > "$WORK_DIR/playlists.json"
 import json, subprocess, sys
-# Get MKV duration via ffprobe
+# Get single-file video duration via ffprobe
 source = sys.argv[1]
 r = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', source], capture_output=True, text=True, timeout=30)
 dur = float(r.stdout.strip()) if r.stdout.strip() else 0
@@ -806,7 +834,7 @@ CLIPS_DIR="$WORK_DIR/clips"
 mkdir -p "$CLIPS_DIR"
 
 if $MKV_INPUT; then
-    # MKV: ffprobe the source file directly as clip "00000"
+    # Single-file video: ffprobe the source file directly as clip "00000"
     python3 - "$SOURCE" "$CLIPS_DIR" << 'PYEOF'
 import json, os, subprocess, sys
 source = sys.argv[1]
@@ -963,7 +991,7 @@ inventory['disc_size_mb'] = round(disc_size / 1048576, 1)
 json.dump(inventory, sys.stdout, indent=2)
 PYEOF
 
-log "Inventory complete: $(python3 -c 'import json,sys;d=json.load(open(sys.argv[1],encoding="utf-8"));print(f"{d[\"disc_size_gb\"]} GB, {len(d[\"clips\"])} clips, {len(d[\"playlists\"])} playlists")' "$INVENTORY_FILE")"
+log "Inventory complete: $(python3 -c 'import json,sys;d=json.load(open(sys.argv[1],encoding="utf-8"));print(f"{d["disc_size_gb"]} GB, {len(d["clips"])} clips, {len(d["playlists"])} playlists")' "$INVENTORY_FILE")"
 
 # ─── Phase 2: Classify ───────────────────────────────────────────────────────
 
@@ -1126,7 +1154,7 @@ idx=0
 for pl in "${MAIN_PLAYLISTS[@]}"; do
     dur="${dur_lines[$idx]:-?}"
     info "$pl — $dur"
-    ((idx++))
+    ((idx++)) || true
 done
 log "Extras: ${#EXTRAS_PLAYLISTS[@]} playlist(s)"
 log "Menus: ${#MENU_PLAYLISTS[@]} playlist(s) + ${orphan_count} orphan clips"
@@ -1315,7 +1343,8 @@ ENCODE_DIR="$WORK_DIR/encode"
 mkdir -p "$ENCODE_DIR"
 
 # Pre-compute ALL data for Phase 4 + Phase 5 in a single systemd-run call
-systemd-run --user --wait -q -u "bd_pre.${RANDOM}.$$" -- python3 - "$INVENTORY_FILE" "$BUDGET_FILE" "$CLASSIFY_FILE" "$WORK_DIR" "$CLIPS_DIR" << 'PYEOF'
+PRECOMPUTE_PY="$WORK_DIR/precompute.py"
+cat > "$PRECOMPUTE_PY" << 'PYEOF'
 import json, os, sys
 
 inventory_file = sys.argv[1]
@@ -1341,7 +1370,10 @@ with open(os.path.join(work_dir, '.clip_precompute.txt'), 'w', encoding='utf-8')
 
 # --- Phase 4: budget values ---
 with open(os.path.join(work_dir, '.budget_values.txt'), 'w', encoding='utf-8') as f:
-    f.write(f'{base}\n{int(base * 1.1)}\n{int(base * 1.5)}\n')
+    # Cap maxrate/bufsize at BD-compatible peaks to avoid encoder rejects on tiny sources
+    maxrate = min(int(base * 1.1), 40000000)
+    bufsize = min(int(base * 1.5), 30000000)
+    f.write(f'{base}\n{maxrate}\n{bufsize}\n')
 
 # --- Phase 4: extras clips ---
 with open(os.path.join(work_dir, '.extras_clips.txt'), 'w', encoding='utf-8') as f:
@@ -1421,6 +1453,9 @@ with open(os.path.join(work_dir, '.main_counts.txt'), 'w', encoding='utf-8') as 
     f.write(f'{len(main_clips)}\n')
     f.write('0\n0\n')  # placeholder, recalculated in Phase 5 after encoding
 PYEOF
+
+systemd-run --user --wait -q -u "bd_pre.${RANDOM}.$$" -- python3 "$PRECOMPUTE_PY" "$INVENTORY_FILE" "$BUDGET_FILE" "$CLASSIFY_FILE" "$WORK_DIR" "$CLIPS_DIR"
+rm -f "$PRECOMPUTE_PY"
 
 # Read budget values (builtins only)
 {
@@ -1864,9 +1899,9 @@ if $MOVIE_ONLY; then
         vf="$ENCODE_DIR/${clip}_video.$VIDEO_EXT"
         [[ -f "$vf" && -s "$vf" ]] || { warn "Missing/empty video for clip ${clip}"; continue; }
         if $first; then
-            echo "V_MPEG4/ISO/$TRACK_TYPE, \"$vf\", fps=$fps, insertSEI, contSPS" >> "$META_FILE"
+            echo "$MUX_VIDEO_TYPE, \"$vf\", fps=$fps, insertSEI, contSPS" >> "$META_FILE"
         else
-            echo "+V_MPEG4/ISO/$TRACK_TYPE, \"$vf\", fps=$fps, insertSEI, contSPS" >> "$META_FILE"
+            echo "+$MUX_VIDEO_TYPE, \"$vf\", fps=$fps, insertSEI, contSPS" >> "$META_FILE"
         fi
         first=false
     done
@@ -1977,7 +2012,7 @@ else
         tmpout="$REBUILD_DIR/${cid}_output"
         {
             echo "MUXOPT --no-pcr-on-video-pid --new-audio-pes --vbr --blu-ray"
-            echo "V_MPEG4/ISO/$TRACK_TYPE, \"$encode_dir/${cid}_video.$VIDEO_EXT\", fps=$fps, insertSEI, contSPS"
+            echo "$MUX_VIDEO_TYPE, \"$encode_dir/${cid}_video.$VIDEO_EXT\", fps=$fps, insertSEI, contSPS"
             aidx=0
             while [[ -f "$encode_dir/${cid}_audio_${aidx}.ac3" ]]; do
                 echo "A_AC3, \"$encode_dir/${cid}_audio_${aidx}.ac3\""

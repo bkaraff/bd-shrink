@@ -2,7 +2,7 @@
 
 ## Project overview
 
-Single-file **bash** script (~2100 lines) that shrinks BD50 Blu-ray backups or MKV files to BD25-compatible BDMV folders. The `-s` flag accepts BDMV folders or **.mkv files** (MKV forces movie-only mode). Built-in Python heredocs handle MPLS binary parsing, MKV demuxing, and data processing. Output is authored with `tsMuxeR`.
+Single-file **bash** script (~2200 lines) that shrinks BD50 Blu-ray backups or video files to BD25-compatible BDMV folders. The `-s` flag accepts BDMV folders (auto-detects `BDMV/` inside a parent directory) or single video files (`.mkv`, `.mp4`, `.m4v`), which force movie-only mode. Built-in Python heredocs handle MPLS binary parsing, video demuxing, and data processing. Output is authored with `tsMuxeR`. The `--codec hevc` option uses `libx265` when the installed `tsMuxeR` supports HEVC (`V_MPEGH/ISO/HEVC`).
 
 ## Key commands
 
@@ -22,8 +22,11 @@ bash -n bd_shrink.sh
 # Surgical (keep menus, IGS only — the default if no --movie-only)
 ./bd_shrink.sh -s /path/to/BDMV -o /output -f --keep-one
 
-# MKV input (forces movie-only mode)
+# MKV/MP4 input (forces movie-only mode)
 ./bd_shrink.sh -s movie.mkv -o /output -f
+
+# MP4 input with HEVC encoding
+./bd_shrink.sh -s movie.mp4 -o /output -f --codec hevc
 
 # Dry-run (needs -f if output dir already exists)
 ./bd_shrink.sh -s /path/to/BDMV -o /tmp/test -n -f
@@ -144,6 +147,12 @@ When run without `-s`/`-o` in an interactive terminal with `gum` installed, the 
 - `local` outside a function is an error in bash; all top-level assignments in the original zsh version have been converted to plain assignments.
 - **Pass 2 encoding validation**: After pass 2, the script validates `.h264` output by checking for an Annex B start code (`\x00\x00\x00` or `\x00\x00\x01`) in the first bytes. Corrupt files (e.g. from VC-1 decode failures) are removed so they don't reach tsMuxeR.
 - `get_source_title` strips trailing slashes from source paths so `/.../BDMV/` returns the parent directory name (previously returned an empty title).
+- **Source auto-detection**: command-line `-s` now accepts a parent directory containing `BDMV/` or a video file (`.mkv`/`.mp4`/`.m4v`), matching the TUI behavior.
+- **Python 3.14 f-strings**: one-liner `python3 -c` calls with f-strings must NOT escape inner double quotes (`d[\"key\"]` fails; use `d["key"]`).
+- **Pre-compute heredoc**: `systemd-run` cannot receive a heredoc on stdin; the pre-compute Python block is written to a temp file and executed by `systemd-run`.
+- **Budget maxrate cap**: `MAIN_MAXRATE` and `MAIN_BUFSIZE` are capped at 40 Mbps / 30 Mbps to prevent encoder rejects on tiny sources.
+- **Single-file input forces movie-only**: `.mkv`/`.mp4`/`.m4v` sources automatically enable movie-only mode (they have no BD structure).
+- **HEVC track type**: tsMuxeR 2.7.0 accepts HEVC only as `V_MPEGH/ISO/HEVC`, not `V_MPEG4/ISO/HEVC`.
 
 ### Known issues
 
