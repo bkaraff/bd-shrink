@@ -188,7 +188,7 @@ Identified via code review. Work through these in priority order. After completi
 
 ### P1 — Silent wrong behavior / incorrect output
 
-- [ ] **P1-1** Some bare `cp` calls remain in surgical Phase 5. In bash these no longer risk SIGCHLD crashes, but wrapping them in `run_ff` would keep the rebuild phase fully managed by systemd.
+- [x] **P1-1** All bare `cp` calls in surgical Phase 5 are now wrapped in `run_ff` for consistent systemd management.
 - [x] **P1-2** Dead shell arrays (`PROBED_CLIPS`, `CLIP_AUD`, `CLIP_SUB`, `CLIP_HEIGHT`, `CLIP_WIDTH`) and their read loop removed.
 - [x] **P1-3** Budget now reads the actual audio track count from the first main clip, capped at 8.
 - [x] **P1-4** `mkisofs` fallback now includes `-allow-limited-size`.
@@ -198,9 +198,9 @@ Identified via code review. Work through these in priority order. After completi
 
 ### P2 — Reliability / quality
 
-- [ ] **P2-1** ISO creation (`genisoimage`/`mkisofs`/`xorriso`) is still run as bare shell children. In bash this no longer risks SIGCHLD, but wrapping in `run_ff` would keep consistency.
-- [ ] **P2-2** Phase 5 surgical rebuild is not resumable. Add a per-clip guard: skip clips whose `.m2ts` already exists in `$DST/BDMV/STREAM/`.
-- [ ] **P2-3** Audio extraction in Phase 4 Python is not resumable — `run_ff` is called without `out_file`. Pass the first audio output file as `out_file`.
+- [x] **P2-1** ISO creation (`genisoimage`/`mkisofs`/`xorriso`) now wrapped in `run_ff` for consistency.
+- [x] **P2-2** Surgical rebuild now skips clips whose `.m2ts` already exists in `$DST/BDMV/STREAM/` (guards tsMuxeR remux).
+- [x] **P2-3** Audio extraction now passes first output audio file as `out_file` to `run_ff` for resumability.
 - [x] **P2-4** Final output size check added in Phase 6; warns if `du -sb "$DST"` exceeds `TARGET_GB`.
 - [x] **P2-5** AC3/EAC3 source audio tracks are now passed through with `-c:a copy` instead of re-encoded.
 - [x] **P2-6** Unused `SCRIPT_DIR` startup variable removed.
@@ -211,7 +211,7 @@ Identified via code review. Work through these in priority order. After completi
 - [x] **P3-1** `local` at top-level removed (bash requires `local` inside functions only).
 - [x] **P3-2** Redundant `isinstance(pl_name, tuple)` check simplified to `for pl_name, pl_data in pl_sorted:`.
 - [x] **P3-3** Repeated `import glob` inside the encoding heredoc moved to the top-level imports.
-- [ ] **P3-4** Text `open()` calls in Python heredocs still omit `encoding='utf-8'`.
+- [x] **P3-4** All text `open()` calls in Python heredocs and `-c` one-liners now specify `encoding='utf-8'`.
 - [x] **P3-5** ISO/disc volume label now uses sanitized source title instead of hardcoded `"BD_SHRINK"`.
 - [x] **P3-6** `VERSION` bumped to `0.2.0`.
 - [x] **P3-7** BD-J detection warning now gated on `! $MOVIE_ONLY`.

@@ -765,7 +765,7 @@ fi
 # Probe all unique clips
 all_clips=$(python3 - "$WORK_DIR" << 'PYEOF'
 import json, os, sys
-with open(os.path.join(sys.argv[1], 'playlists.json')) as f:
+with open(os.path.join(sys.argv[1], 'playlists.json'), encoding='utf-8') as f:
     data = json.load(f)
 clips = set()
 for pl in data.values():
@@ -799,7 +799,7 @@ r = subprocess.run(['ffprobe', '-v', 'error',
     '-of', 'json', source],
     capture_output=True, text=True, timeout=60)
 data = json.loads(r.stdout) if r.stdout else {'streams': [], 'format': {}}
-with open(os.path.join(clips_dir, '00000.json'), 'w') as f:
+with open(os.path.join(clips_dir, '00000.json'), 'w', encoding='utf-8') as f:
     json.dump(data, f)
 PYEOF
 else
@@ -810,7 +810,7 @@ source = sys.argv[1]
 clips_dir = sys.argv[2]
 
 # Read playlists to get clip IDs
-playlists = json.load(open(os.path.join(os.path.dirname(clips_dir), 'playlists.json')))
+playlists = json.load(open(os.path.join(os.path.dirname(clips_dir), 'playlists.json'), encoding='utf-8'))
 all_clips = set()
 for pl in playlists.values():
     for item in pl['playitems']:
@@ -831,7 +831,7 @@ for clip in sorted(all_clips):
         data = json.loads(r.stdout) if r.stdout else {'streams': [], 'format': {}}
     except Exception:
         data = {'streams': [], 'format': {}}
-    with open(out_path, 'w') as f:
+    with open(out_path, 'w', encoding='utf-8') as f:
         json.dump(data, f)
 PYEOF
 fi
@@ -841,7 +841,7 @@ python3 - "$WORK_DIR" "$CLIPS_DIR" << 'PYEOF' > "$INVENTORY_FILE"
 import json, os, sys
 
 work_dir = sys.argv[1]
-playlists = json.load(open(os.path.join(work_dir, 'playlists.json')))
+playlists = json.load(open(os.path.join(work_dir, 'playlists.json'), encoding='utf-8'))
 clips_dir = sys.argv[2]
 
 # Summarize each unique clip
@@ -852,7 +852,7 @@ for clip_name in os.listdir(clips_dir):
     clip_id = clip_name.replace('.json', '')
     path = os.path.join(clips_dir, clip_name)
     try:
-        data = json.load(open(path))
+        data = json.load(open(path, encoding='utf-8'))
     except:
         clip_summaries[clip_id] = {'error': 'failed to parse ffprobe output'}
         continue
@@ -945,7 +945,7 @@ inventory['disc_size_mb'] = round(disc_size / 1048576, 1)
 json.dump(inventory, sys.stdout, indent=2)
 PYEOF
 
-log "Inventory complete: $(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(f"{d[\"disc_size_gb\"]} GB, {len(d[\"clips\"])} clips, {len(d[\"playlists\"])} playlists")' "$INVENTORY_FILE")"
+log "Inventory complete: $(python3 -c 'import json,sys;d=json.load(open(sys.argv[1],encoding="utf-8"));print(f"{d[\"disc_size_gb\"]} GB, {len(d[\"clips\"])} clips, {len(d[\"playlists\"])} playlists")' "$INVENTORY_FILE")"
 
 # ─── Phase 2: Classify ───────────────────────────────────────────────────────
 
@@ -955,7 +955,7 @@ CLASSIFY_FILE="$WORK_DIR/classify.json"
 python3 - "$INVENTORY_FILE" "$PY_KEEP_ONE" << 'PYEOF' > "$CLASSIFY_FILE"
 import json, sys
 
-inv = json.load(open(sys.argv[1]))
+inv = json.load(open(sys.argv[1],encoding="utf-8"))
 playlists = inv['playlists']
 clips = inv['clips']
 
@@ -1077,16 +1077,16 @@ if sys.argv[2] == 'True':
 json.dump(classification, sys.stdout, indent=2)
 PYEOF
 
-MAIN_PLAYLISTS=($(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(" ".join(d["main_movie"]))' "$CLASSIFY_FILE"))
-EXTRAS_PLAYLISTS=($(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(" ".join(d["extras"]))' "$CLASSIFY_FILE"))
-MENU_PLAYLISTS=($(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(" ".join(d["menus"]))' "$CLASSIFY_FILE"))
+MAIN_PLAYLISTS=($(python3 -c 'import json,sys;d=json.load(open(sys.argv[1],encoding="utf-8"));print(" ".join(d["main_movie"]))' "$CLASSIFY_FILE"))
+EXTRAS_PLAYLISTS=($(python3 -c 'import json,sys;d=json.load(open(sys.argv[1],encoding="utf-8"));print(" ".join(d["extras"]))' "$CLASSIFY_FILE"))
+MENU_PLAYLISTS=($(python3 -c 'import json,sys;d=json.load(open(sys.argv[1],encoding="utf-8"));print(" ".join(d["menus"]))' "$CLASSIFY_FILE"))
 
 log "Main movie: ${#MAIN_PLAYLISTS[@]} playlist(s)"
 for pl in "${MAIN_PLAYLISTS[@]}"; do
-    info "$pl — $(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(d["details"][sys.argv[2]]["duration_str"])' "$CLASSIFY_FILE" "$pl" 2>/dev/null || echo '?')"
+    info "$pl — $(python3 -c 'import json,sys;d=json.load(open(sys.argv[1],encoding="utf-8"));print(d["details"][sys.argv[2]]["duration_str"])' "$CLASSIFY_FILE" "$pl" 2>/dev/null || echo '?')"
 done
 log "Extras: ${#EXTRAS_PLAYLISTS[@]} playlist(s)"
-log "Menus: ${#MENU_PLAYLISTS[@]} playlist(s) + $(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(len(d["orphans"]))' "$CLASSIFY_FILE") orphan clips"
+log "Menus: ${#MENU_PLAYLISTS[@]} playlist(s) + $(python3 -c 'import json,sys;d=json.load(open(sys.argv[1],encoding="utf-8"));print(len(d["orphans"]))' "$CLASSIFY_FILE") orphan clips"
 
 # ─── Phase 3: Budget ─────────────────────────────────────────────────────────
 
@@ -1107,8 +1107,8 @@ extras_audio_bitrate_str = sys.argv[8]
 main_audio_bitrate_str = sys.argv[9]
 commentary_audio_bitrate_str = sys.argv[10]
 
-inv = json.load(open(inventory_file))
-clf = json.load(open(classify_file))
+inv = json.load(open(inventory_file, encoding='utf-8'))
+clf = json.load(open(classify_file, encoding='utf-8'))
 clips = inv['clips']
 
 target_bytes = target_gb * 1073741824
@@ -1247,7 +1247,7 @@ PYEOF
 log "Budget summary:"
 python3 - "$BUDGET_FILE" << 'PYEOF' 2>/dev/null
 import json, sys
-b = json.load(open(sys.argv[1]))
+b = json.load(open(sys.argv[1],encoding="utf-8"))
 print(f"  Target:            {b['target_gb']} GB")
 print(f"  Menu (passthru):   {b['menu_size_mb']} MB")
 print(f"  Extras original:   {b['extras_original_mb']} MB")
@@ -1281,13 +1281,13 @@ classify_file = sys.argv[3]
 work_dir = sys.argv[4]
 clips_dir = sys.argv[5]
 
-data = json.load(open(inventory_file))
-budget = json.load(open(budget_file))
-classify = json.load(open(classify_file))
+data = json.load(open(inventory_file, encoding='utf-8'))
+budget = json.load(open(budget_file, encoding='utf-8'))
+classify = json.load(open(classify_file, encoding='utf-8'))
 base = int(budget['main_bitrate'])
 
 # --- Phase 4: clip metadata ---
-with open(os.path.join(work_dir, '.clip_precompute.txt'), 'w') as f:
+with open(os.path.join(work_dir, '.clip_precompute.txt'), 'w', encoding='utf-8') as f:
     for cid, c in data.get('clips', {}).items():
         aud = len(c.get('audio', []))
         sub = len(c.get('subtitles', []))
@@ -1297,11 +1297,11 @@ with open(os.path.join(work_dir, '.clip_precompute.txt'), 'w') as f:
         f.write(f'{cid}|{aud}|{sub}|{h}|{w}\n')
 
 # --- Phase 4: budget values ---
-with open(os.path.join(work_dir, '.budget_values.txt'), 'w') as f:
+with open(os.path.join(work_dir, '.budget_values.txt'), 'w', encoding='utf-8') as f:
     f.write(f'{base}\n{int(base * 1.1)}\n{int(base * 1.5)}\n')
 
 # --- Phase 4: extras clips ---
-with open(os.path.join(work_dir, '.extras_clips.txt'), 'w') as f:
+with open(os.path.join(work_dir, '.extras_clips.txt'), 'w', encoding='utf-8') as f:
     for cid, cd in budget['extras_details'].items():
         if cd['will_reencode']:
             f.write(f'{cid}\n')
@@ -1313,13 +1313,13 @@ for pl_name in classify['main_movie']:
     main_clips = pd.get('clips', [])
     break  # first main playlist
 
-with open(os.path.join(work_dir, '.main_clips.txt'), 'w') as f:
+with open(os.path.join(work_dir, '.main_clips.txt'), 'w', encoding='utf-8') as f:
     for cid in main_clips:
         f.write(f'{cid}\n')
 
 # --- Phase 5: main playlist name ---
 main_pl_name = classify['main_movie'][0] if classify['main_movie'] else ''
-with open(os.path.join(work_dir, '.main_playlist.txt'), 'w') as f:
+with open(os.path.join(work_dir, '.main_playlist.txt'), 'w', encoding='utf-8') as f:
     f.write(f'{main_pl_name}\n')
 
 # --- Phase 5: chapter timestamps ---
@@ -1333,16 +1333,16 @@ for t in ct:
     if t not in seen:
         chapters.append(ch)
         seen.add(t)
-with open(os.path.join(work_dir, '.main_chapters.txt'), 'w') as f:
+with open(os.path.join(work_dir, '.main_chapters.txt'), 'w', encoding='utf-8') as f:
     f.write(';'.join(chapters) + '\n')
 
 # --- Phase 5: FPS of all clips (surgical mode needs per-clip FPS) ---
-with open(os.path.join(work_dir, '.clip_fps.txt'), 'w') as f:
+with open(os.path.join(work_dir, '.clip_fps.txt'), 'w', encoding='utf-8') as f:
     for cid in data.get('clips', {}):
         fps = '24000/1001'
         clip_json = os.path.join(clips_dir, f'{cid}.json')
         try:
-            d = json.load(open(clip_json))
+            d = json.load(open(clip_json, encoding='utf-8'))
             for s in d.get('streams', []):
                 if s.get('codec_type') == 'video':
                     fps = s.get('r_frame_rate', '24000/1001')
@@ -1357,23 +1357,23 @@ if main_clips:
     first_cid = main_clips[0]
     clip_json = os.path.join(clips_dir, f'{first_cid}.json')
     try:
-        d = json.load(open(clip_json))
+        d = json.load(open(clip_json, encoding='utf-8'))
         for s in d.get('streams', []):
             if s.get('codec_type') == 'video':
                 main_fps = s.get('r_frame_rate', '24000/1001')
                 break
     except:
         pass
-with open(os.path.join(work_dir, '.main_fps.txt'), 'w') as f:
+with open(os.path.join(work_dir, '.main_fps.txt'), 'w', encoding='utf-8') as f:
     f.write(f'{main_fps}\n')
 
 # --- Phase 5: all clip IDs (surgical mode needs the full list) ---
-with open(os.path.join(work_dir, '.all_clips.txt'), 'w') as f:
+with open(os.path.join(work_dir, '.all_clips.txt'), 'w', encoding='utf-8') as f:
     for cid in sorted(data.get('clips', {}).keys()):
         f.write(f'{cid}\n')
 
 # --- Phase 5: main clip count, max audio, max subtitle ---
-with open(os.path.join(work_dir, '.main_counts.txt'), 'w') as f:
+with open(os.path.join(work_dir, '.main_counts.txt'), 'w', encoding='utf-8') as f:
     f.write(f'{len(main_clips)}\n')
     f.write('0\n0\n')  # placeholder, recalculated in Phase 5 after encoding
 PYEOF
@@ -1466,7 +1466,7 @@ def get_sub_codecs(clip):
     if not os.path.isfile(cpath):
         return []
     try:
-        d = json.load(open(cpath))
+        d = json.load(open(cpath, encoding='utf-8'))
         subs = []
         for s in d.get('streams', []):
             if s.get('codec_type') == 'subtitle':
@@ -1481,7 +1481,7 @@ def get_audio_codecs(clip):
     if not os.path.isfile(cpath):
         return []
     try:
-        d = json.load(open(cpath))
+        d = json.load(open(cpath, encoding='utf-8'))
         codecs = []
         for s in d.get('streams', []):
             if s.get('codec_type') == 'audio':
@@ -1530,7 +1530,7 @@ main_clips = [c.strip() for c in main_clips_str.split('\n') if c.strip()]
 
 # Read pre-computed clip metadata
 clip_data = {}
-with open('{}/.clip_precompute.txt'.format(work_dir)) as f:
+with open('{}/.clip_precompute.txt'.format(work_dir), encoding='utf-8') as f:
     for line in f:
         line = line.strip()
         if not line: continue
@@ -1565,7 +1565,8 @@ if not no_extras and not movie_only:
                     audio_args += ['-map', '0:a:{}'.format(ai), '-c:a', 'ac3',
                                    '-b:a', extras_audio_bitrate, out_path]
                 actual_audio_idx += 1
-            if actual_audio_idx > 0 and run_ff(audio_args):
+            first_audio = os.path.join(encode_dir, '{}_audio_0.ac3'.format(clip))
+            if actual_audio_idx > 0 and run_ff(audio_args, out_file=first_audio):
                 audio_tracks = actual_audio_idx
                 for ai in range(actual_audio_idx):
                     if not os.path.isfile(os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, ai))):
@@ -1646,7 +1647,8 @@ if main_clips:
                     audio_args += ['-map', '0:a:{}'.format(ai), '-c:a', 'ac3',
                                    '-b:a', bitrate, out_path]
                 actual_audio_idx += 1
-            if actual_audio_idx > 0 and run_ff(audio_args):
+            first_audio = os.path.join(encode_dir, '{}_audio_0.ac3'.format(clip))
+            if actual_audio_idx > 0 and run_ff(audio_args, out_file=first_audio):
                 audio_tracks = actual_audio_idx
 
         # Subtitle extraction
@@ -1881,10 +1883,10 @@ else
     mkdir -p "$DST/CERTIFICATE"
 
     # Copy source BD metadata
-    cp "$SOURCE/index.bdmv" "$DST/BDMV/"
-    cp "$SOURCE/MovieObject.bdmv" "$DST/BDMV/"
-    [[ -d "$SOURCE/../CERTIFICATE" ]] && cp -r "$SOURCE/../CERTIFICATE/"* "$DST/CERTIFICATE/" 2>/dev/null || true
-    [[ -d "$SOURCE/CERTIFICATE" ]] && cp -r "$SOURCE/CERTIFICATE/"* "$DST/CERTIFICATE/" 2>/dev/null || true
+    run_ff cp "$SOURCE/index.bdmv" "$DST/BDMV/"
+    run_ff cp "$SOURCE/MovieObject.bdmv" "$DST/BDMV/"
+    [[ -d "$SOURCE/../CERTIFICATE" ]] && run_ff cp -r "$SOURCE/../CERTIFICATE/"* "$DST/CERTIFICATE/" 2>/dev/null || true
+    [[ -d "$SOURCE/CERTIFICATE" ]] && run_ff cp -r "$SOURCE/CERTIFICATE/"* "$DST/CERTIFICATE/" 2>/dev/null || true
 
     # Discover which clips were re-encoded (builtins only)
     ENCODED_CLIP_IDS=""
@@ -1901,6 +1903,7 @@ else
     for cid in $ENCODED_CLIP_IDS; do
         [[ -n "$cid" ]] || continue
         [[ -f "$encode_dir/${cid}_video.h264" ]] || continue
+        [[ -f "$DST/BDMV/STREAM/${cid}.m2ts" ]] && continue
         ((++encoded_count))
         fps=${CLIP_FPS[$cid]:-24000/1001}
 
@@ -1977,18 +1980,18 @@ else
     done
 
     # Copy all MPLS files
-    cp "$SOURCE/PLAYLIST/"*.mpls "$DST/BDMV/PLAYLIST/" 2>/dev/null || true
+    run_ff cp "$SOURCE/PLAYLIST/"*.mpls "$DST/BDMV/PLAYLIST/" 2>/dev/null || true
 
     # Copy extra metadata directories
     for dir in AUXDATA META BDJO JAR; do
-        [[ -d "$SOURCE/$dir" ]] && cp -r "$SOURCE/$dir" "$DST/BDMV/" 2>/dev/null || true
+        [[ -d "$SOURCE/$dir" ]] && run_ff cp -r "$SOURCE/$dir" "$DST/BDMV/" 2>/dev/null || true
     done
 
     # Copy BACKUP
-    cp "$SOURCE/index.bdmv" "$DST/BDMV/BACKUP/"
-    cp "$SOURCE/MovieObject.bdmv" "$DST/BDMV/BACKUP/"
-    cp "$SOURCE/BACKUP/PLAYLIST/"*.mpls "$DST/BDMV/BACKUP/PLAYLIST/" 2>/dev/null || true
-    cp "$DST/BDMV/CLIPINF/"*.clpi "$DST/BDMV/BACKUP/CLIPINF/" 2>/dev/null || true
+    run_ff cp "$SOURCE/index.bdmv" "$DST/BDMV/BACKUP/" || true
+    run_ff cp "$SOURCE/MovieObject.bdmv" "$DST/BDMV/BACKUP/" || true
+    run_ff cp "$SOURCE/BACKUP/PLAYLIST/"*.mpls "$DST/BDMV/BACKUP/PLAYLIST/" 2>/dev/null || true
+    run_ff cp "$DST/BDMV/CLIPINF/"*.clpi "$DST/BDMV/BACKUP/CLIPINF/" 2>/dev/null || true
 
 fi  # end if MOVIE_ONLY
 
@@ -2016,17 +2019,17 @@ if $OUTPUT_ISO; then
 
     # Only include BDMV and CERTIFICATE in the ISO; never include the .work directory
     if command -v genisoimage &>/dev/null; then
-        genisoimage -udf -allow-limited-size -V "$ISO_LABEL" -o "$ISO_OUT" \
+        run_ff genisoimage -udf -allow-limited-size -V "$ISO_LABEL" -o "$ISO_OUT" \
             -graft-points BDMV="$DST/BDMV" CERTIFICATE="$DST/CERTIFICATE" 2>/dev/null || {
             warn "ISO creation failed with genisoimage"
         }
     elif command -v mkisofs &>/dev/null; then
-        mkisofs -udf -allow-limited-size -V "$ISO_LABEL" -o "$ISO_OUT" \
+        run_ff mkisofs -udf -allow-limited-size -V "$ISO_LABEL" -o "$ISO_OUT" \
             -graft-points BDMV="$DST/BDMV" CERTIFICATE="$DST/CERTIFICATE" 2>/dev/null || {
             warn "ISO creation failed with mkisofs"
         }
     elif command -v xorriso &>/dev/null; then
-        xorriso -outdev "$ISO_OUT" -volid "$ISO_LABEL" \
+        run_ff xorriso -outdev "$ISO_OUT" -volid "$ISO_LABEL" \
             -map "$DST/BDMV" /BDMV -map "$DST/CERTIFICATE" /CERTIFICATE -commit 2>/dev/null || {
             warn "ISO creation failed with xorriso"
         }
