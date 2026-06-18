@@ -180,3 +180,55 @@ Key details:
 ### Menu preservation (surgical mode) — IMPLEMENTED
 
 Surgical mode reads `PlayList_type` from the MPLS binary's `AppInfoPlayList` struct. Playlists with `PlayList_type == 1` (menu/interactive) are forced into the menu category regardless of duration. Their clips are excluded from re-encoding in the budget phase (`extras_clips -= menu_clips`), preserving IGS (Interactive Graphics) button overlays.
+
+## Planned fixes
+
+Identified via code review. Work through these in priority order. After completing any item, mark it `DONE` inline and update the Gotchas / Known issues sections above if relevant.
+
+### P0 — Crash / silent data corruption
+
+- [ ] **P0-1** `check_deps()` defined but never called (line 464). Also, its `command -v run_ff` check never finds shell functions — replace with `type run_ff` or remove `run_ff` from the list. Call `check_deps` immediately after arg parsing.
+- [ ] **P0-2** `tsMuxeR` in movie-only authoring is a bare shell child, not wrapped in `run_ff` (line 1847). Surgical mode correctly uses `run_ff tsMuxeR` (line 1916). Fix: `run_ff tsMuxeR "$META_FILE" "$DST" ...`
+- [ ] **P0-3** `MKISOFS=genisoimage` prefix before `run_ff` is silently dropped — `systemd-run` does not inherit the shell environment. `growisofs` never sees the override. Fix: `run_ff env MKISOFS=genisoimage growisofs ...` (line 530).
+- [ ] **P0-4** All unquoted PYEOF heredocs shell-expand `$SOURCE`, `$WORK_DIR`, etc. directly into Python string literals. Paths with apostrophes (e.g. `O'Brien's`) cause `SyntaxError`; crafted paths can inject Python code. The clip-probe heredoc (line 806) already uses the correct pattern (`python3 - "$ARG" << 'PYEOF'` + `sys.argv`). Apply the same fix to every other heredoc (lines 749, 843, 957, 1101+).
+
+### P1 — Silent wrong behavior / incorrect output
+
+- [ ] **P1-1** Nine-plus bare `cp` calls in surgical Phase 5 are direct shell children (lines 1869–1872, 1953, 1957, 1961–1964). Wrap each in `run_ff cp ...` to match the SIGCHLD mitigation strategy.
+- [ ] **P1-2** Five dead shell arrays (`PROBED_CLIPS`, `CLIP_AUD`, `CLIP_SUB`, `CLIP_HEIGHT`, `CLIP_WIDTH`) and their `while read` loop are declared/populated but never read in shell code — Phase 4 reads `.clip_precompute.txt` directly in Python (lines 767, 1361–1367). Delete them.
+- [ ] **P1-3** Budget Phase 3 hard-codes 8 audio tracks per clip (lines 1193–1201). Phase 4 uses the actual count (`for ai in range(src_aud)`). Fix the budget to read the real audio track count from the first main clip's inventory data; cap at 8 as a safety limit.
+- [ ] **P1-4** `mkisofs` fallback for ISO creation omits `-allow-limited-size` (lines 1989–1991). Required for M2TS files > 4 GB or the ISO is silently corrupt. The `genisoimage` path (line 1984) already includes it.
+- [ ] **P1-5** `--no-extras` has no effect on disc space. `PY_NO_EXTRAS` is never checked in budget Phase 3, so the video bitrate is computed too conservatively. Phase 5 also copies extras verbatim (original size) without checking `NO_EXTRAS`, risking an over-budget disc. Fix both the budget and the Phase 5 copy loop.
+- [ ] **P1-6** MKV source detection is case-sensitive: `*.mkv` rejects `.MKV` files common on NTFS mounts (line 602). Fix: `[[ "${SOURCE:l}" == *.mkv ]]`.
+- [ ] **P1-7** `rm -rf "${REBUILD_DIR:-}"` at cleanup (line 2058) expands to `rm -rf ""` in movie-only mode where `REBUILD_DIR` is never set. Guard: `[[ -n "${REBUILD_DIR:-}" ]] && rm -rf "$REBUILD_DIR"`.
+
+### P2 — Reliability / quality
+
+- [ ] **P2-1** `genisoimage`, `mkisofs`, and `xorriso` ISO creation runs are bare shell children (lines 1984, 1989, 1994). Writing a 25 GB ISO takes 5–15 minutes — high SIGCHLD risk. Wrap each in `run_ff`.
+- [ ] **P2-2** Phase 5 surgical rebuild is not resumable. Unlike Phase 4 (which skips existing `.h264` files), a crash in Phase 5 causes a full re-run of all `tsMuxeR` remux + copy operations. Add a per-clip guard: skip clips whose `.m2ts` already exists in `$DST/BDMV/STREAM/`.
+- [ ] **P2-3** Audio extraction in Phase 4 Python is not resumable — `run_ff` is called without `out_file`, bypassing the existence check (lines 1555, 1633). Pass the first audio output file as `out_file` so restarts skip already-extracted tracks.
+- [ ] **P2-4** No final output size check in Phase 6. Budget miscalculations and verbatim-copy overruns go undetected. Add a `du -sb "$DST"` check and warn if the result exceeds `TARGET_GB`.
+- [ ] **P2-5** Existing AC3/EAC3 audio tracks are always re-encoded to AC3 (lines 1551, 1629) — a generation loss with no benefit. Pass through with `-c:a copy` when the source codec is `ac3` or `eac3`.
+- [ ] **P2-6** `SCRIPT_DIR` is computed via a subshell at startup (line 9) but never referenced anywhere in the script. Delete it.
+- [ ] **P2-7** Phase 2 logging spawns 5+ separate Python subprocesses just to extract label strings from `classify.json` (lines 1082–1091). Consolidate into a single reporting block at the end of the classification heredoc.
+
+### P3 — Code quality
+
+- [ ] **P3-1** `local` used at top-level (outside any function) in several places (lines 589, 619, 1922, 1939). In zsh this is silently a global assignment. Remove the `local` keyword from top-level assignments.
+- [ ] **P3-2** Phase 2 detail loop always iterates over tuples from `dict.items()`, so `isinstance(pl_name, tuple)` is always `True` (lines 1054–1057). Simplify to `for pl_name, pl_data in pl_sorted:`.
+- [ ] **P3-3** `import glob` is repeated twice inside the `run_ff` function body and once in the pass-1 cleanup block (lines 1497, 1508, 1664). Move to the top-level imports of the encoding heredoc.
+- [ ] **P3-4** All `open()` calls in Python heredocs omit `encoding='utf-8'`. On non-UTF-8 locales or discs with non-ASCII metadata filenames this raises `UnicodeDecodeError`. Add `encoding='utf-8'` throughout (binary MPLS files already use `'rb'` — leave those alone).
+- [ ] **P3-5** ISO/disc volume label is hardcoded as `"BD_SHRINK"` (lines 530, 1984, 1989, 1994, 2000). Use the source title instead (truncated to 32 chars, uppercased, spaces → underscores per ISO9660 rules).
+- [ ] **P3-6** `VERSION="0.1.0"` (line 8) has never been bumped despite burn, TUI, MKV, ISO, and HEVC-groundwork features being added. Bump to a meaningful value.
+- [ ] **P3-7** BD-J detection warning fires in `--movie-only` mode (line 647) where menu preservation is irrelevant. Gate the warning on `! $MOVIE_ONLY`.
+
+### P4 — Feature gaps
+
+- [ ] **P4-1** No encoding progress visibility during multi-hour x264 two-pass encode. Consider writing periodic elapsed-time lines to the log, or passing ffmpeg a `-progress` pipe that appends a summary line every N seconds.
+- [ ] **P4-2** Add `--codec hevc` option using `libx265`. BD-compatible HEVC needs `--level 4.1 --high-tier` and `vbv-bufsize`/`vbv-maxrate` constraints. tsMuxeR 2.7.0 supports HEVC. Would significantly improve quality-per-bit on smaller targets.
+- [ ] **P4-3** Pre-compute block hits `break` after the first main playlist (lines 1289–1293), so only the first playlist's clips are written to `.main_clips.txt`. In surgical non-`--keep-one` mode, alternate cuts are present in MPLS files but their M2TS clips are copied verbatim at original bitrate, silently risking an over-budget disc.
+- [ ] **P4-4** Add `--clean-work` flag (or document an age-based cleanup one-liner). Accumulated `.work` directories from repeated runs can exceed 20 GB each.
+
+### ARCH — Long-term
+
+- [ ] **ARCH-1** Evaluate full rewrite to bash. No zsh-specific features are used (`SH_WORD_SPLIT` is bash default; `NULL_GLOB` → `shopt -s nullglob`). A bash rewrite eliminates the SIGCHLD crash entirely and removes the need for most `systemd-run` wrapping. This is the only permanent fix for the crash bug.
