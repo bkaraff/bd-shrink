@@ -204,7 +204,7 @@ Identified via code review. Work through these in priority order. After completi
 - [x] **P2-4** Final output size check added in Phase 6; warns if `du -sb "$DST"` exceeds `TARGET_GB`.
 - [x] **P2-5** AC3/EAC3 source audio tracks are now passed through with `-c:a copy` instead of re-encoded.
 - [x] **P2-6** Unused `SCRIPT_DIR` startup variable removed.
-- [ ] **P2-7** Phase 2 logging still spawns separate `python3 -c` calls. Consolidate into a single reporting block.
+- [x] **P2-7** Phase 2 logging consolidated into a single Python heredoc (was 6 separate `python3 -c` calls).
 
 ### P3 — Code quality
 

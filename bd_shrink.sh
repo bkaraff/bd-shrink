@@ -1077,16 +1077,41 @@ if sys.argv[2] == 'True':
 json.dump(classification, sys.stdout, indent=2)
 PYEOF
 
-MAIN_PLAYLISTS=($(python3 -c 'import json,sys;d=json.load(open(sys.argv[1],encoding="utf-8"));print(" ".join(d["main_movie"]))' "$CLASSIFY_FILE"))
-EXTRAS_PLAYLISTS=($(python3 -c 'import json,sys;d=json.load(open(sys.argv[1],encoding="utf-8"));print(" ".join(d["extras"]))' "$CLASSIFY_FILE"))
-MENU_PLAYLISTS=($(python3 -c 'import json,sys;d=json.load(open(sys.argv[1],encoding="utf-8"));print(" ".join(d["menus"]))' "$CLASSIFY_FILE"))
+script_output=$(python3 - "$CLASSIFY_FILE" << 'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1], encoding='utf-8'))
+main_list = d.get('main_movie', [])
+print(' '.join(main_list))
+print(' '.join(d.get('extras', [])))
+print(' '.join(d.get('menus', [])))
+print(len(d.get('orphans', [])))
+for pl in main_list:
+    detail = d.get('details', {}).get(pl, {})
+    print(detail.get('duration_str', '?'))
+PYEOF
+) || die "Failed to parse classify data"
+
+mapfile -t lines <<< "$script_output"
+
+main_line="${lines[0]:-}"
+extras_line="${lines[1]:-}"
+menu_line="${lines[2]:-}"
+orphan_count="${lines[3]:-0}"
+dur_lines=("${lines[@]:4}")
+
+IFS=' ' read -ra MAIN_PLAYLISTS <<< "$main_line"
+IFS=' ' read -ra EXTRAS_PLAYLISTS <<< "$extras_line"
+IFS=' ' read -ra MENU_PLAYLISTS <<< "$menu_line"
 
 log "Main movie: ${#MAIN_PLAYLISTS[@]} playlist(s)"
+idx=0
 for pl in "${MAIN_PLAYLISTS[@]}"; do
-    info "$pl — $(python3 -c 'import json,sys;d=json.load(open(sys.argv[1],encoding="utf-8"));print(d["details"][sys.argv[2]]["duration_str"])' "$CLASSIFY_FILE" "$pl" 2>/dev/null || echo '?')"
+    dur="${dur_lines[$idx]:-?}"
+    info "$pl — $dur"
+    ((idx++))
 done
 log "Extras: ${#EXTRAS_PLAYLISTS[@]} playlist(s)"
-log "Menus: ${#MENU_PLAYLISTS[@]} playlist(s) + $(python3 -c 'import json,sys;d=json.load(open(sys.argv[1],encoding="utf-8"));print(len(d["orphans"]))' "$CLASSIFY_FILE") orphan clips"
+log "Menus: ${#MENU_PLAYLISTS[@]} playlist(s) + ${orphan_count} orphan clips"
 
 # ─── Phase 3: Budget ─────────────────────────────────────────────────────────
 
