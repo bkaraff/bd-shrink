@@ -21,6 +21,8 @@ USE_TUI=false
 INSTALL_DEPS=false
 BURN=false
 BURN_DEVICE=""
+CLEAN_WORK=false
+CODEC="h264"
 
 # Default output directory when -o is omitted
 MOVIES_DIR="${HOME}/Movies"
@@ -120,6 +122,8 @@ Options:
       --install-deps     Show required tools and install commands, then exit
       --burn              Burn output to BD-R after validation
       --burn-device DEV   Optical drive device path (auto-detected if omitted)
+      --clean-work        Remove working directory on success
+      --codec CODEC       Video codec: h264 or hevc (default: h264)
   -h, --help             Show this help
 EOF
     exit 1
@@ -564,10 +568,24 @@ while [[ $# -gt 0 ]]; do
         --install-deps)    INSTALL_DEPS=true; shift ;;
         --burn)            BURN=true; shift ;;
         --burn-device)     BURN_DEVICE="$2"; shift 2 ;;
+        --clean-work)      CLEAN_WORK=true; shift ;;
+        --codec)           CODEC="$2"; shift 2 ;;
         -h|--help)         usage ;;
         *)                 die "Unknown option: $1" ;;
     esac
 done
+
+# Validate codec
+[[ "$CODEC" =~ ^(h264|hevc)$ ]] || die "Invalid --codec $CODEC — use h264 or hevc"
+
+# Derive codec-specific variables
+if [[ "$CODEC" == "hevc" ]]; then
+    VIDEO_EXT="hevc"
+    TRACK_TYPE="HEVC"
+else
+    VIDEO_EXT="h264"
+    TRACK_TYPE="AVC"
+fi
 
 # --install-deps: show dependency info and exit (no source/output required)
 if $INSTALL_DEPS; then
@@ -1335,8 +1353,9 @@ with open(os.path.join(work_dir, '.extras_clips.txt'), 'w', encoding='utf-8') as
 main_clips = []
 for pl_name in classify['main_movie']:
     pd = classify['details'].get(pl_name, {})
-    main_clips = pd.get('clips', [])
-    break  # first main playlist
+    for c in pd.get('clips', []):
+        if c not in main_clips:
+            main_clips.append(c)
 
 with open(os.path.join(work_dir, '.main_clips.txt'), 'w', encoding='utf-8') as f:
     for cid in main_clips:
@@ -1454,7 +1473,7 @@ if [[ -n "$MAIN_CLIPS" ]]; then
 fi
 
 # Run ALL encoding in a single Python process.
-python3 -u - "$SOURCE" "$MKV_INPUT" "$ENCODE_DIR" "$WORK_DIR" "$CLIPS_DIR" "$INVENTORY_FILE" "$BD_X264_OPTS" "$MAIN_PRESET" "$MAIN_BITRATE" "$MAIN_MAXRATE" "$MAIN_BUFSIZE" "$MAIN_AUDIO_BITRATE" "$COMMENTARY_AUDIO_BITRATE" "$EXTRAS_AUDIO_BITRATE" "$EXTRAS_CRF" "$EXTRAS_SCALE" "$EXTRAS_CLIPS" "$MAIN_CLIPS" "$NO_EXTRAS" "$MOVIE_ONLY" << 'PYEOF'
+python3 -u - "$SOURCE" "$MKV_INPUT" "$ENCODE_DIR" "$WORK_DIR" "$CLIPS_DIR" "$INVENTORY_FILE" "$BD_X264_OPTS" "$MAIN_PRESET" "$MAIN_BITRATE" "$MAIN_MAXRATE" "$MAIN_BUFSIZE" "$MAIN_AUDIO_BITRATE" "$COMMENTARY_AUDIO_BITRATE" "$EXTRAS_AUDIO_BITRATE" "$EXTRAS_CRF" "$EXTRAS_SCALE" "$EXTRAS_CLIPS" "$MAIN_CLIPS" "$NO_EXTRAS" "$MOVIE_ONLY" "$CODEC" << 'PYEOF'
 import glob, json, os, subprocess, sys
 
 _source = sys.argv[1]
@@ -1479,6 +1498,11 @@ extras_clips_str = sys.argv[17]
 main_clips_str = sys.argv[18]
 no_extras = sys.argv[19] == 'true'
 movie_only = sys.argv[20] == 'true'
+codec = sys.argv[21]
+enc_lib = 'libx265' if codec == 'hevc' else 'libx264'
+video_ext = 'hevc' if codec == 'hevc' else 'h264'
+pass_prefix = 'x265' if codec == 'hevc' else 'x264'
+is_hevc = codec == 'hevc'
 
 def clip_source(clip):
     if mkv_input:
@@ -1563,14 +1587,17 @@ with open('{}/.clip_precompute.txt'.format(work_dir), encoding='utf-8') as f:
         clip_data[parts[0]] = {'aud': int(parts[1]), 'sub': int(parts[2]), 'h': int(parts[3]), 'w': int(parts[4])}
 
 # --- Encode extras ---
+total_clips = len(extras_clips) + len(main_clips)
+clip_idx = 0
 if not no_extras and not movie_only:
     for i, clip in enumerate(extras_clips):
         src = clip_source(clip)
-        out_video = os.path.join(encode_dir, '{}_video.h264'.format(clip))
+        out_video = os.path.join(encode_dir, '{}_video.' + video_ext).format(clip)
         cd = clip_data.get(clip, {'aud':0, 'sub':0, 'h':1080})
         src_aud, src_sub, src_height = cd['aud'], cd['sub'], cd['h']
 
-        sys.stderr.write('  Extra: {}.m2ts\n'.format(clip))
+        clip_idx += 1
+        sys.stderr.write('  [{}/{}] Extra: {}.m2ts\n'.format(clip_idx, total_clips, clip))
 
         # Audio extraction
         audio_tracks = 0
@@ -1631,9 +1658,12 @@ if not no_extras and not movie_only:
         x264_full_opts = '{}:vbv-maxrate=12000:vbv-bufsize=12000'.format(bd_x264_opts)
         for attempt in range(3):
             cmd = ['ffmpeg', '-y', '-v', 'error', '-i', src,
-                   '-map', '0:v:0', '-c:v', 'libx264', '-preset', 'medium',
-                   '-crf', str(extras_crf)] + video_filter + [
-                   '-x264opts', x264_full_opts, out_video]
+                   '-map', '0:v:0', '-c:v', enc_lib, '-preset', 'medium',
+                   '-crf', str(extras_crf)] + video_filter
+            if is_hevc:
+                cmd += ['-maxrate', '12000k', '-bufsize', '12000k', out_video]
+            else:
+                cmd += ['-x264opts', x264_full_opts, out_video]
             if run_ff(cmd, out_file=out_video):
                 break
             if attempt < 2:
@@ -1646,12 +1676,13 @@ if not no_extras and not movie_only:
 if main_clips:
     for clip in main_clips:
         src = clip_source(clip)
-        out_video = os.path.join(encode_dir, '{}_video.h264'.format(clip))
-        pass_log = os.path.join(work_dir, 'x264_{}.log'.format(clip))
+        out_video = os.path.join(encode_dir, '{}_video.' + video_ext).format(clip)
+        pass_log = os.path.join(work_dir, pass_prefix + '_{}.log'.format(clip))
         cd = clip_data.get(clip, {'aud':0, 'sub':0, 'h':1080})
         src_aud, src_sub = cd['aud'], cd['sub']
 
-        sys.stderr.write('  Main: {}.m2ts\n'.format(clip))
+        clip_idx += 1
+        sys.stderr.write('  [{}/{}] Main: {}.m2ts\n'.format(clip_idx, total_clips, clip))
 
         # Audio extraction
         audio_tracks = 0
@@ -1708,12 +1739,15 @@ if main_clips:
             try: os.remove(f)
             except: pass
 
+        sys.stderr.write('    Pass 1/2...\n')
         for attempt in range(3):
             cmd = ['ffmpeg', '-y', '-v', 'error', '-i', src,
-                   '-map', '0:v:0', '-c:v', 'libx264', '-preset', main_preset,
-                   '-b:v', main_bitrate, '-x264opts', bd_x264_opts,
-                   '-pass', '1', '-passlogfile', pass_log,
-                   '-an', '-f', 'null', '/dev/null']
+                   '-map', '0:v:0', '-c:v', enc_lib, '-preset', main_preset,
+                   '-b:v', main_bitrate]
+            if not is_hevc:
+                cmd += ['-x264opts', bd_x264_opts]
+            cmd += ['-pass', '1', '-passlogfile', pass_log,
+                    '-an', '-f', 'null', '/dev/null']
             try:
                 r = subprocess.run(cmd, timeout=None, capture_output=False)
                 if r.returncode == 0:
@@ -1730,13 +1764,15 @@ if main_clips:
 
         # Pass 2
         pass2_ok = False
+        sys.stderr.write('    Pass 2/2...\n')
         for attempt in range(3):
             cmd = ['ffmpeg', '-y', '-v', 'error', '-i', src,
-                   '-map', '0:v:0', '-c:v', 'libx264', '-preset', main_preset,
-                   '-b:v', main_bitrate, '-maxrate', main_maxrate, '-bufsize', main_bufsize,
-                   '-x264opts', bd_x264_opts,
-                   '-pass', '2', '-passlogfile', pass_log,
-                   '-an', out_video]
+                   '-map', '0:v:0', '-c:v', enc_lib, '-preset', main_preset,
+                   '-b:v', main_bitrate, '-maxrate', main_maxrate, '-bufsize', main_bufsize]
+            if not is_hevc:
+                cmd += ['-x264opts', bd_x264_opts]
+            cmd += ['-pass', '2', '-passlogfile', pass_log,
+                    '-an', out_video]
             try:
                 r = subprocess.run(cmd, timeout=None, capture_output=False)
                 if r.returncode == 0:
@@ -1825,12 +1861,12 @@ if $MOVIE_ONLY; then
     # Write video tracks
     first=true
     for clip in $MAIN_CLIPS; do
-        vf="$ENCODE_DIR/${clip}_video.h264"
+        vf="$ENCODE_DIR/${clip}_video.$VIDEO_EXT"
         [[ -f "$vf" && -s "$vf" ]] || { warn "Missing/empty video for clip ${clip}"; continue; }
         if $first; then
-            echo "V_MPEG4/ISO/AVC, \"$vf\", fps=$fps, insertSEI, contSPS" >> "$META_FILE"
+            echo "V_MPEG4/ISO/$TRACK_TYPE, \"$vf\", fps=$fps, insertSEI, contSPS" >> "$META_FILE"
         else
-            echo "+V_MPEG4/ISO/AVC, \"$vf\", fps=$fps, insertSEI, contSPS" >> "$META_FILE"
+            echo "+V_MPEG4/ISO/$TRACK_TYPE, \"$vf\", fps=$fps, insertSEI, contSPS" >> "$META_FILE"
         fi
         first=false
     done
@@ -1916,10 +1952,10 @@ else
     # Discover which clips were re-encoded (builtins only)
     ENCODED_CLIP_IDS=""
     encode_dir="$WORK_DIR/encode"
-    for f in "$encode_dir/"*_video.h264; do
+    for f in "$encode_dir/"*_video.$VIDEO_EXT; do
         [[ -f "$f" ]] || continue
         fname="${f##*/}"
-        cid="${fname%_video.h264}"
+        cid="${fname%_video.$VIDEO_EXT}"
         ENCODED_CLIP_IDS+="$cid "
     done
 
@@ -1927,7 +1963,7 @@ else
     log "Re-encoded clips:"
     for cid in $ENCODED_CLIP_IDS; do
         [[ -n "$cid" ]] || continue
-        [[ -f "$encode_dir/${cid}_video.h264" ]] || continue
+        [[ -f "$encode_dir/${cid}_video.$VIDEO_EXT" ]] || continue
         [[ -f "$DST/BDMV/STREAM/${cid}.m2ts" ]] && continue
         ((++encoded_count))
         fps=${CLIP_FPS[$cid]:-24000/1001}
@@ -1941,7 +1977,7 @@ else
         tmpout="$REBUILD_DIR/${cid}_output"
         {
             echo "MUXOPT --no-pcr-on-video-pid --new-audio-pes --vbr --blu-ray"
-            echo "V_MPEG4/ISO/AVC, \"$encode_dir/${cid}_video.h264\", fps=$fps, insertSEI, contSPS"
+            echo "V_MPEG4/ISO/$TRACK_TYPE, \"$encode_dir/${cid}_video.$VIDEO_EXT\", fps=$fps, insertSEI, contSPS"
             aidx=0
             while [[ -f "$encode_dir/${cid}_audio_${aidx}.ac3" ]]; do
                 echo "A_AC3, \"$encode_dir/${cid}_audio_${aidx}.ac3\""
@@ -2122,10 +2158,15 @@ if $HAS_BDJ && ! $MOVIE_ONLY; then
 elif $MOVIE_ONLY; then
     info "Movie-only — no BD-J concerns."
 fi
-log "Working files retained at: $WORK_DIR (delete manually when satisfied)"
+
+# Cleanup
+if $CLEAN_WORK; then
+    rm -rf "$WORK_DIR" 2>/dev/null || true
+    log "Working directory removed: $WORK_DIR"
+else
+    [[ -n "${REBUILD_DIR:-}" ]] && rm -rf "$REBUILD_DIR" 2>/dev/null || true
+    log "Working files retained at: $WORK_DIR (delete manually when satisfied)"
+fi
 if ! $BURN; then
     log "IMPORTANT: Test the output in VLC or mpv before burning to disc!"
 fi
-
-# Cleanup temp directories
-[[ -n "${REBUILD_DIR:-}" ]] && rm -rf "$REBUILD_DIR" 2>/dev/null || true

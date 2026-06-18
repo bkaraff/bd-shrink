@@ -218,10 +218,10 @@ Identified via code review. Work through these in priority order. After completi
 
 ### P4 — Feature gaps
 
-- [ ] **P4-1** No encoding progress visibility during multi-hour x264 two-pass encode.
-- [ ] **P4-2** Add `--codec hevc` option using `libx265`.
-- [ ] **P4-3** Pre-compute block only writes the first main playlist's clips to `.main_clips.txt`.
-- [ ] **P4-4** Add `--clean-work` flag or document cleanup one-liner.
+- [x] **P4-1** Encoding progress now shows `[N/TOTAL]` prefix and `Pass 1/2` / `Pass 2/2` status indicators.
+- [x] **P4-2** `--codec hevc` option added using `libx265` (default remains `h264`).
+- [x] **P4-3** Pre-compute block now accumulates clips from ALL main playlists (not just the first), with dedup.
+- [x] **P4-4** `--clean-work` flag added (removes working directory on success).
 
 ### ARCH — Long-term
 
