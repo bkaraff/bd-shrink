@@ -1,9 +1,6 @@
-#!/usr/bin/env zsh
+#!/usr/bin/env bash
 set -euo pipefail
-# Make word splitting on unquoted $var behave like bash (split on IFS)
-setopt SH_WORD_SPLIT
-# Don't error when a glob matches nothing (like bash shopt -s nullglob)
-setopt NULL_GLOB
+shopt -s nullglob
 
 VERSION="0.1.0"
 SCRIPT_DIR="$(cd "$(dirname "${0}")" && pwd)"
@@ -155,11 +152,12 @@ run_tui() {
                 local selected=""
                 if [[ -n "$SOURCE_ROOT" ]] && [[ -d "$SOURCE_ROOT" ]]; then
                     gum style --foreground "#7f849c" "Looking in: ${SOURCE_ROOT}"
-                    local dirs=("$SOURCE_ROOT"/*(/N) "$SOURCE_ROOT"/*.mkv(N) "$SOURCE_ROOT"/*.m2ts(N) "$SOURCE_ROOT"/*.ts(N) "$SOURCE_ROOT"/*.iso(N))
+                    local dirs=("$SOURCE_ROOT"/*/ "$SOURCE_ROOT"/*.mkv "$SOURCE_ROOT"/*.m2ts "$SOURCE_ROOT"/*.ts "$SOURCE_ROOT"/*.iso)
                     if [[ ${#dirs[@]} -gt 0 ]]; then
-                        typeset -a names
-                        for d in "${dirs[@]}"; do names+=("${d##*/}"); done
-                        local choice=$(print -l "${(@)names}" \
+                        declare -a names
+                        names=()
+                        for d in "${dirs[@]}"; do d="${d%/}"; names+=("${d##*/}"); done
+                        local choice=$(printf '%s\n' "${names[@]}" \
                             | gum filter --header="SELECT SOURCE" --placeholder "Search sources (esc = browse file system)..." || true)
                         if [[ -n "$choice" ]]; then
                             selected="$SOURCE_ROOT/$choice"
@@ -180,28 +178,28 @@ run_tui() {
                 local movie_folder=""
                 if [[ -f "$selected/index.bdmv" ]]; then
                     SOURCE="$selected"
-                    movie_folder="${selected:h}"
+                    movie_folder="$(dirname "$selected")"
                 elif [[ -f "$selected/BDMV/index.bdmv" ]]; then
                     SOURCE="$selected/BDMV"
                     movie_folder="$selected"
                 elif [[ -f "$selected" ]]; then
                     SOURCE="$selected"
-                    movie_folder="${selected:h}"
+                    movie_folder="$(dirname "$selected")"
                     MOVIE_ONLY=true
                 else
-                    typeset -a found_bdmv
-                    found_bdmv=("$selected"/*/BDMV(N))
-                    if [[ -n "${found_bdmv[1]:-}" ]] && [[ -f "${found_bdmv[1]}/index.bdmv" ]]; then
-                        SOURCE="${found_bdmv[1]}"
-                        movie_folder="${found_bdmv[1]:h}"
+                    declare -a found_bdmv
+                    found_bdmv=("$selected"/*/BDMV)
+                    if [[ -n "${found_bdmv[0]:-}" ]] && [[ -f "${found_bdmv[0]}/index.bdmv" ]]; then
+                        SOURCE="${found_bdmv[0]}"
+                        movie_folder="$(dirname "${found_bdmv[0]}")"
                     fi
                 fi
 
                 # If no BDMV, look for a video/ISO file directly inside the selected folder.
                 if [[ -z "$SOURCE" ]]; then
-                    local videos=("$selected"/*.mkv(N) "$selected"/*.m2ts(N) "$selected"/*.ts(N) "$selected"/*.iso(N))
-                    if [[ -n "${videos[1]:-}" ]]; then
-                        SOURCE="${videos[1]}"
+                    local videos=("$selected"/*.mkv "$selected"/*.m2ts "$selected"/*.ts "$selected"/*.iso)
+                    if [[ -n "${videos[0]:-}" ]]; then
+                        SOURCE="${videos[0]}"
                         movie_folder="$selected"
                         MOVIE_ONLY=true
                     fi
@@ -218,7 +216,7 @@ run_tui() {
 
             # Remember the parent of the movie folder as SOURCE_ROOT.
             if [[ -n "$movie_folder" ]]; then
-                SOURCE_ROOT="${movie_folder:h}"
+                SOURCE_ROOT="$(dirname "$movie_folder")"
                 mkdir -p "$CONFIG_DIR"
                 printf '%s\n' "$SOURCE_ROOT" > "$SOURCE_ROOT_FILE"
             fi
@@ -236,7 +234,7 @@ run_tui() {
         local mode_default="Full disc (keep menus, extras)"
         $MOVIE_ONLY && mode_default="Movie-only (no menus, fresh BD)"
 
-        local mode_choice=$(print -l \
+        local mode_choice=$(printf '%s\n' \
                 "Full disc (keep menus, extras)" \
                 "Movie-only (no menus, fresh BD)" \
             | gum choose --limit=1 --height=2 \
@@ -254,7 +252,7 @@ run_tui() {
         local iso_option_default="Folder (BDMV)"
         $OUTPUT_ISO && iso_option_default="ISO (.iso file)"
 
-        local iso_option_choice=$(print -l \
+        local iso_option_choice=$(printf '%s\n' \
                 "Folder (BDMV)" \
                 "ISO (.iso file)" \
             | gum choose --limit=1 --height=2 \
@@ -269,7 +267,7 @@ run_tui() {
         # ── Encoding options ──
         local preset_default="$MAIN_PRESET"
 
-        local preset_choice=$(print -l \
+        local preset_choice=$(printf '%s\n' \
                 "slow" "medium" "fast" "slower" "veryslow" \
             | gum choose --limit=1 --height=5 \
                 --header="ENCODING PRESET" --selected="$preset_default" || true)
@@ -285,10 +283,10 @@ run_tui() {
         fi
 
         if [[ ${#opt_labels[@]} -gt 0 ]]; then
-            local selected_str="${(j:,:)opt_selected}"
+            local selected_str=$(IFS=,; echo "${opt_selected[*]}")
             local choose_flags=(--no-limit --height=${#opt_labels[@]} --header="SELECT OPTIONS")
             [[ -n "$selected_str" ]] && choose_flags+=(--selected="$selected_str")
-            local chosen=$(print -l "${(@)opt_labels}" \
+            local chosen=$(printf '%s\n' "${opt_labels[@]}" \
                 | gum choose "${choose_flags[@]}" || true)
 
             if [[ -n "$chosen" ]]; then
@@ -586,7 +584,7 @@ fi
 
 # Auto-derive output path from source if not provided
 if [[ -z "$OUTPUT" ]]; then
-    local source_title=$(get_source_title "$SOURCE")
+    source_title=$(get_source_title "$SOURCE")
     OUTPUT="${MOVIES_DIR}/${source_title}"
     log "Output not specified — defaulting to ${OUTPUT}"
 fi
@@ -616,8 +614,8 @@ fi
 # create/use a source-named subdirectory so the actual output is self-contained
 # and the work directory remains a sibling in the output root.
 if [[ -d "$OUTPUT" ]] && [[ ! -d "$OUTPUT/BDMV" ]]; then
-    local source_title=$(get_source_title "$SOURCE")
-    local output_candidate="${OUTPUT%/}/${source_title}"
+    source_title=$(get_source_title "$SOURCE")
+    output_candidate="${OUTPUT%/}/${source_title}"
     if [[ -d "$output_candidate" ]]; then
         OUTPUT="$output_candidate"
         log "Output directory is a parent folder — using existing ${OUTPUT}"
@@ -1918,10 +1916,10 @@ else
             continue
         }
 
-        # Copy remuxed output to destination (use zsh glob, no ls/head)
-        local new_m2ts=("$tmpout/BDMV/STREAM/"*.m2ts(N))
-        local new_clpi=("$tmpout/BDMV/CLIPINF/"*.clpi(N))
-        if [[ -n "${new_m2ts[1]:-}" ]] && [[ -n "${new_clpi[1]:-}" ]]; then
+        # Copy remuxed output to destination
+        new_m2ts=("$tmpout/BDMV/STREAM/"*.m2ts)
+        new_clpi=("$tmpout/BDMV/CLIPINF/"*.clpi)
+        if [[ -n "${new_m2ts[0]:-}" ]] && [[ -n "${new_clpi[0]:-}" ]]; then
             run_ff cp "$new_m2ts" "$DST/BDMV/STREAM/${cid}.m2ts" || true
             run_ff cp "$new_clpi" "$DST/BDMV/CLIPINF/${cid}.clpi" || true
             log "    done: ${cid}.m2ts"
@@ -1936,7 +1934,7 @@ else
         [[ -n "$cid" ]] || continue
         [[ -f "$DST/BDMV/STREAM/${cid}.m2ts" ]] && continue
         # Check if this clip was encoded (remux already placed it)
-        local was_encoded=false
+        was_encoded=false
         for ecid in $ENCODED_CLIP_IDS; do
             [[ "$ecid" == "$cid" ]] && was_encoded=true && break
         done
@@ -1974,7 +1972,7 @@ if $OUTPUT_ISO; then
     if [[ "$OUTPUT" == *.iso ]]; then
         ISO_OUT="$OUTPUT"
     else
-        local iso_title=$(get_source_title "$SOURCE")
+        iso_title=$(get_source_title "$SOURCE")
         ISO_OUT="${OUTPUT%/}/${iso_title}.iso"
     fi
     log "Creating ISO: ${ISO_OUT}..."
