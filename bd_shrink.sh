@@ -153,18 +153,29 @@ run_tui() {
             # Retry until a valid source is selected
             while true; do
                 local selected=""
+
+                # Quick-pick filter only if SOURCE_ROOT has recognizable movie folders/files
                 if [[ -n "$SOURCE_ROOT" ]] && [[ -d "$SOURCE_ROOT" ]]; then
-                    gum style --foreground "#7f849c" "Looking in: ${SOURCE_ROOT}"
-                    local dirs=("$SOURCE_ROOT"/*/ "$SOURCE_ROOT"/*.mkv "$SOURCE_ROOT"/*.mp4 "$SOURCE_ROOT"/*.m4v "$SOURCE_ROOT"/*.m2ts "$SOURCE_ROOT"/*.ts "$SOURCE_ROOT"/*.iso)
-                    if [[ ${#dirs[@]} -gt 0 ]]; then
-                        declare -a names
-                        names=()
-                        for d in "${dirs[@]}"; do d="${d%/}"; names+=("${d##*/}"); done
-                        local choice=$(printf '%s\n' "${names[@]}" \
-                            | gum filter --header="SELECT SOURCE" --placeholder "Search sources (esc = browse file system)..." || true)
-                        if [[ -n "$choice" ]]; then
-                            selected="$SOURCE_ROOT/$choice"
+                    declare -a candidates=()
+                    for d in "$SOURCE_ROOT"/*/; do
+                        [[ -d "$d" ]] || continue
+                        d="${d%/}"
+                        local base="${d##*/}"
+                        if [[ -f "$d/index.bdmv" ]] || [[ -f "$d/BDMV/index.bdmv" ]]; then
+                            candidates+=("$base")
+                        elif ls "$d"/*.mkv "$d"/*.mp4 "$d"/*.m4v "$d"/*.m2ts "$d"/*.ts "$d"/*.iso &>/dev/null; then
+                            candidates+=("$base")
                         fi
+                    done
+                    for f in "$SOURCE_ROOT"/*.mkv "$SOURCE_ROOT"/*.mp4 "$SOURCE_ROOT"/*.m4v "$SOURCE_ROOT"/*.m2ts "$SOURCE_ROOT"/*.ts "$SOURCE_ROOT"/*.iso; do
+                        [[ -f "$f" ]] && candidates+=("${f##*/}")
+                    done
+
+                    if [[ ${#candidates[@]} -gt 0 ]]; then
+                        gum style --foreground "#7f849c" "Looking in: ${SOURCE_ROOT}"
+                        local choice=$(printf '%s\n' "${candidates[@]}" \
+                            | gum filter --header="SELECT SOURCE" --placeholder "Search sources (esc = browse file system)..." || true)
+                        [[ -n "$choice" ]] && selected="$SOURCE_ROOT/$choice"
                     fi
                 fi
 
@@ -212,9 +223,9 @@ run_tui() {
                     break  # valid source found
                 fi
 
-                warn "No BDMV folder or video file found under $selected"
-                warn "Select the folder CONTAINING BDMV/ or index.bdmv, not its parent."
-                SOURCE_ROOT="$selected"  # retry from the selected directory
+                warn "No BDMV or video file found directly under: $selected"
+                warn "Browse deeper and select the folder containing BDMV/ or a video file."
+                SOURCE_ROOT="$selected"  # next browser starts here
             done
 
             # Remember the parent of the movie folder as SOURCE_ROOT.
@@ -229,7 +240,25 @@ run_tui() {
         if [[ -z "$OUTPUT" ]]; then
             local source_title=$(get_source_title "$SOURCE")
             local default_out="${MOVIES_DIR}/${source_title}"
-            OUTPUT=$(gum input --placeholder "$default_out" --prompt "Output: ") || exit 1
+            local out_choice=$(printf '%s\n' \
+                    "Use default: $default_out" \
+                    "Browse for folder..." \
+                    "Type custom path..." \
+                | gum choose --limit=1 --height=3 --header="SELECT OUTPUT" || true)
+            case "$out_choice" in
+                *Browse*)
+                    local start_dir="$MOVIES_DIR"
+                    [[ -d "$start_dir" ]] || start_dir="${HOME}"
+                    OUTPUT=$(gum file --directory --cursor="▸ " "$start_dir" \
+                        --header="SELECT OUTPUT FOLDER — ↑↓ move, → enter dir, ← go up, enter select") || OUTPUT="$default_out"
+                    ;;
+                *Type*)
+                    OUTPUT=$(gum input --placeholder "$default_out" --prompt "Output: ") || OUTPUT="$default_out"
+                    ;;
+                *)
+                    OUTPUT="$default_out"
+                    ;;
+            esac
             [[ -z "$OUTPUT" ]] && OUTPUT="$default_out"
         fi
 

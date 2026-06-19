@@ -129,8 +129,9 @@ Log files are named `bd_shrink_YYYYMMDD_HHMMSS.log`.
 
 When run without `-s`/`-o` in an interactive terminal with `gum` installed, the script launches an interactive TUI instead of erroring. Pass `--tui` to force TUI mode even when args are provided.
 
-- **Source selection**: `gum filter` fuzzy finder from `SOURCE_ROOT` (saved at `~/.config/bd-shrink/source_root`), falling back to `gum file` browser from `/data-nvme1` or `$HOME`.
+- **Source selection**: `gum filter` quick-pick shows only folders/files that actually contain a recognizable source (BDMV or video/ISO). Falls back to `gum file` browser from `SOURCE_ROOT`, `/data-nvme1`, or `$HOME` — browse freely; if the selected folder has no source directly inside, the browser reopens at that location.
 - **BDMV auto-detection**: after selecting a folder, looks for `index.bdmv`, `BDMV/index.bdmv`, or `*/BDMV/index.bdmv`. If no BDMV found, looks for a video/ISO file directly inside.
+- **Output selection**: choose "Use default", "Browse for folder...", or "Type custom path...".
 - **Options**: mode, output format, and encoding preset via `gum choose --limit=1`.
 - **Summary**: colorized Catppuccin Mocha box, then action chooser to revise any step before processing.
 
