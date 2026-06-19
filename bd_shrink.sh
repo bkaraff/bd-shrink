@@ -23,6 +23,7 @@ BURN=false
 BURN_DEVICE=""
 CLEAN_WORK=false
 CODEC="h264"
+NICE=0
 
 # Default output directory when -o is omitted
 MOVIES_DIR="${HOME}/Movies"
@@ -87,7 +88,11 @@ trap 'echo "FATAL: line $LINENO exit $?" >&2' ERR
 # The command runs as a transient systemd service, NOT as a child of bash.
 # Even if the shell crashes, the service continues to completion.
 run_ff() {
-    systemd-run --user --wait -q -u "bd_ff.${RANDOM}.$$" --setenv=PATH=/usr/local/bin:/usr/bin:/bin -- "$@"
+    local nice_prop=()
+    if [[ "${NICE:-0}" -gt 0 ]]; then
+        nice_prop=(--property=Nice="$NICE")
+    fi
+    systemd-run --user --wait -q -u "bd_ff.${RANDOM}.$$" --setenv=PATH=/usr/local/bin:/usr/bin:/bin "${nice_prop[@]}" -- "$@"
 }
 
 usage() {
@@ -124,6 +129,7 @@ Options:
       --burn-device DEV   Optical drive device path (auto-detected if omitted)
       --clean-work        Remove working directory on success
       --codec CODEC       Video codec: h264 or hevc (default: h264)
+      --nice [N]          Run encoder/rebuild at low CPU priority (default N=19)
   -h, --help             Show this help
 EOF
     exit 1
@@ -599,6 +605,13 @@ while [[ $# -gt 0 ]]; do
         --burn-device)     BURN_DEVICE="$2"; shift 2 ;;
         --clean-work)      CLEAN_WORK=true; shift ;;
         --codec)           CODEC="$2"; shift 2 ;;
+        --nice)
+            if [[ -n "${2:-}" && ! "$2" =~ ^- ]]; then
+                NICE="$2"; shift 2
+            else
+                NICE=19; shift
+            fi
+            ;;
         -h|--help)         usage ;;
         *)                 die "Unknown option: $1" ;;
     esac
@@ -606,6 +619,10 @@ done
 
 # Validate codec
 [[ "$CODEC" =~ ^(h264|hevc)$ ]] || die "Invalid --codec $CODEC — use h264 or hevc"
+
+# Validate nice value
+[[ "$NICE" =~ ^[0-9]+$ ]] || die "Invalid --nice value $NICE — must be a non-negative integer"
+[[ "$NICE" -le 19 ]] || die "Invalid --nice value $NICE — must be 0-19"
 
 # Derive codec-specific variables
 if [[ "$CODEC" == "hevc" ]]; then
@@ -1483,7 +1500,11 @@ with open(os.path.join(work_dir, '.main_counts.txt'), 'w', encoding='utf-8') as 
     f.write('0\n0\n')  # placeholder, recalculated in Phase 5 after encoding
 PYEOF
 
-systemd-run --user --wait -q -u "bd_pre.${RANDOM}.$$" -- python3 "$PRECOMPUTE_PY" "$INVENTORY_FILE" "$BUDGET_FILE" "$CLASSIFY_FILE" "$WORK_DIR" "$CLIPS_DIR"
+pre_nice_prop=()
+if [[ "${NICE:-0}" -gt 0 ]]; then
+    pre_nice_prop=(--property=Nice="$NICE")
+fi
+systemd-run --user --wait -q -u "bd_pre.${RANDOM}.$$" "${pre_nice_prop[@]}" -- python3 "$PRECOMPUTE_PY" "$INVENTORY_FILE" "$BUDGET_FILE" "$CLASSIFY_FILE" "$WORK_DIR" "$CLIPS_DIR"
 rm -f "$PRECOMPUTE_PY"
 
 # Read budget values (builtins only)
@@ -1537,7 +1558,7 @@ if [[ -n "$MAIN_CLIPS" ]]; then
 fi
 
 # Run ALL encoding in a single Python process.
-python3 -u - "$SOURCE" "$MKV_INPUT" "$ENCODE_DIR" "$WORK_DIR" "$CLIPS_DIR" "$INVENTORY_FILE" "$BD_X264_OPTS" "$MAIN_PRESET" "$MAIN_BITRATE" "$MAIN_MAXRATE" "$MAIN_BUFSIZE" "$MAIN_AUDIO_BITRATE" "$COMMENTARY_AUDIO_BITRATE" "$EXTRAS_AUDIO_BITRATE" "$EXTRAS_CRF" "$EXTRAS_SCALE" "$EXTRAS_CLIPS" "$MAIN_CLIPS" "$NO_EXTRAS" "$MOVIE_ONLY" "$CODEC" << 'PYEOF'
+python3 -u - "$SOURCE" "$MKV_INPUT" "$ENCODE_DIR" "$WORK_DIR" "$CLIPS_DIR" "$INVENTORY_FILE" "$BD_X264_OPTS" "$MAIN_PRESET" "$MAIN_BITRATE" "$MAIN_MAXRATE" "$MAIN_BUFSIZE" "$MAIN_AUDIO_BITRATE" "$COMMENTARY_AUDIO_BITRATE" "$EXTRAS_AUDIO_BITRATE" "$EXTRAS_CRF" "$EXTRAS_SCALE" "$EXTRAS_CLIPS" "$MAIN_CLIPS" "$NO_EXTRAS" "$MOVIE_ONLY" "$CODEC" "$NICE" << 'PYEOF'
 import glob, json, os, subprocess, sys
 
 _source = sys.argv[1]
@@ -1563,10 +1584,16 @@ main_clips_str = sys.argv[18]
 no_extras = sys.argv[19] == 'true'
 movie_only = sys.argv[20] == 'true'
 codec = sys.argv[21]
+nice = int(sys.argv[22])
 enc_lib = 'libx265' if codec == 'hevc' else 'libx264'
 video_ext = 'hevc' if codec == 'hevc' else 'h264'
 pass_prefix = 'x265' if codec == 'hevc' else 'x264'
 is_hevc = codec == 'hevc'
+
+def apply_nice(cmd):
+    if nice > 0:
+        return ['nice', '-n', str(nice)] + cmd
+    return cmd
 
 def clip_source(clip):
     if mkv_input:
@@ -1622,6 +1649,7 @@ def run_ff(cmd, out_file=None, pass_log_base=None):
         matches = glob.glob(pass_log_base + '*')
         if matches:
             return True
+    cmd = apply_nice(cmd)
     try:
         r = subprocess.run(cmd, timeout=None, capture_output=False)
         if r.returncode == 0:
@@ -1812,6 +1840,7 @@ if main_clips:
                 cmd += ['-x264opts', bd_x264_opts]
             cmd += ['-pass', '1', '-passlogfile', pass_log,
                     '-an', '-f', 'null', '/dev/null']
+            cmd = apply_nice(cmd)
             try:
                 r = subprocess.run(cmd, timeout=None, capture_output=False)
                 if r.returncode == 0:
@@ -1837,6 +1866,7 @@ if main_clips:
                 cmd += ['-x264opts', bd_x264_opts]
             cmd += ['-pass', '2', '-passlogfile', pass_log,
                     '-an', out_video]
+            cmd = apply_nice(cmd)
             try:
                 r = subprocess.run(cmd, timeout=None, capture_output=False)
                 if r.returncode == 0:
