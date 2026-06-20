@@ -1094,6 +1094,26 @@ for pl_name, pl_data in pl_sorted:
         # Short clips with video -> menu animations/transitions
         menu_pls.append(pl_name)
 
+# Second pass: catch menu-adjacent playlists.
+# Collect clips referenced by known menus, then scan extras for:
+#   - shared clips (e.g. menu background also used by a warning screen)
+#   - zero-chapter + short duration (logos, warnings, transitions)
+menu_clip_set = set()
+for pl_name in menu_pls:
+    for c in playlists.get(pl_name, {}).get('clips', []):
+        menu_clip_set.add(c)
+
+adjacent_extras = []
+for pl_name in extras_pls:
+    pl = playlists.get(pl_name, {})
+    if any(c in menu_clip_set for c in pl.get('clips', [])):
+        menu_pls.append(pl_name)
+    elif pl.get('chapters', 0) == 0 and pl.get('duration', 0) < 120:
+        menu_pls.append(pl_name)
+    else:
+        adjacent_extras.append(pl_name)
+extras_pls = adjacent_extras
+
 # Re-classify: the LARGEST long playlist(s) are the main movie.
 # Real movies have both long duration AND large size. Some discs contain
 # bogus playlists that repeat a short clip many times, giving them a huge
