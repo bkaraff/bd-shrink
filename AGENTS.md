@@ -49,6 +49,8 @@ Phases:
 5. **Rebuild** — surgical (replace M2TS in place, keep menus) or fresh `tsMuxeR` authoring (`--movie-only`)
 6. **Validate** — file/CLPI checks
 
+**Resumability**: the encode phase skips clips whose output already exists. After a crash or interruption, re-run the same command (without `-f`) to resume from where it left off. Do NOT delete the `.work` directory or use `-f` when resuming.
+
 ## Modes
 
 | Mode | Result | Caveats |
@@ -117,8 +119,7 @@ Auto-launched when `-s`/`-o` are omitted (requires `gum`). Source selection retr
 - **bash only**: `README.md` still incorrectly says "Requires zsh"; the script was rewritten in bash. Use `bash -n bd_shrink.sh` for syntax checks, not `zsh -n`.
 - **`local` is only valid inside functions** in bash.
 - Use `read < file` for line-oriented metadata reads; the script reads metadata files with `read`/`while read` loops, not `$(< file)`.
-- `EXTRAS_CLIPS` and `MAIN_CLIPS` have trailing newlines from `while read` — trimmed with `${VAR%$'
-'}` before use.
+- `EXTRAS_CLIPS` and `MAIN_CLIPS` have trailing newlines from `while read` — trimmed with parameter expansion (`${VAR%$'\n'}`) before use.
 - Playlist `clips` arrays are deduplicated during inventory assembly (preserving order).
 - **Pass 2 validation**: after encoding, `.h264` output is checked for Annex B start code; corrupt files are removed so they don't reach `tsMuxeR`.
 - SRT subtitles are extracted but skipped in the tsMuxeR meta (tsMuxeR 2.7.0 on Linux lacks font rendering). PGS subtitles pass through. DVD/VobSub subtitles are filtered out.
