@@ -542,8 +542,10 @@ burn_output() {
             die "No ISO file found for burning (expected: $ISO_OUT)"
         fi
         log "Burning ISO to $burn_dev..."
-        if command -v growisofs &>/dev/null; then
-            run_ff growisofs -dvd-compat -Z "${burn_dev}=${ISO_OUT}" || {
+        local growisofs_bin
+        growisofs_bin="$(command -v growisofs 2>/dev/null || true)"
+        if [[ -n "$growisofs_bin" ]]; then
+            run_ff "$growisofs_bin" -dvd-compat -Z "${burn_dev}=${ISO_OUT}" || {
                 die "Burn failed with growisofs"
             }
         else
@@ -555,15 +557,18 @@ burn_output() {
         fi
     else
         # Direct pipe: genisoimage -udf → growisofs, no temp ISO
-        if ! command -v growisofs &>/dev/null; then
+        local growisofs_bin genisoimage_bin
+        growisofs_bin="$(command -v growisofs 2>/dev/null || true)"
+        genisoimage_bin="$(command -v genisoimage 2>/dev/null || true)"
+        if [[ -z "$growisofs_bin" ]]; then
             die "growisofs is required for --burn (install: sudo dnf install dvd+rw-tools)"
         fi
-        if ! command -v genisoimage &>/dev/null; then
+        if [[ -z "$genisoimage_bin" ]]; then
             die "genisoimage is required for --burn (install: sudo dnf install genisoimage)"
         fi
         log "Piping to $burn_dev via growisofs (no temp ISO)..."
         # Only stream BDMV/CERTIFICATE to the drive, not .work or other siblings
-        run_ff env MKISOFS=genisoimage growisofs -dvd-compat -Z "$burn_dev" -udf -allow-limited-size -V "$ISO_LABEL" \
+        run_ff env MKISOFS="$genisoimage_bin" "$growisofs_bin" -dvd-compat -Z "$burn_dev" -udf -allow-limited-size -V "$ISO_LABEL" \
             -graft-points BDMV="$DST/BDMV" CERTIFICATE="$DST/CERTIFICATE" || {
             die "Burn failed with growisofs"
         }
@@ -730,7 +735,7 @@ mkdir -p "$WORK_DIR"
 
 # Start logging to file while still printing to terminal
 mkdir -p "$LOG_DIR"
-exec > >(tee -a "$LOG_FILE") 2>&1
+exec > >(tee -a "$LOG_FILE" "$WORK_DIR/bd_shrink.log") 2>&1
 log "Logging to $LOG_FILE"
 
 # Detect BD-J
@@ -1769,7 +1774,7 @@ if not no_extras and not movie_only:
 
         x264_full_opts = '{}:vbv-maxrate=12000:vbv-bufsize=12000'.format(bd_x264_opts)
         for attempt in range(3):
-            cmd = ['ffmpeg', '-y', '-v', 'error', '-i', src,
+            cmd = ['ffmpeg', '-y', '-v', 'error', '-stats', '-i', src,
                    '-map', '0:v:0', '-c:v', enc_lib, '-preset', 'medium',
                    '-crf', str(extras_crf)] + video_filter
             if is_hevc:
@@ -1853,7 +1858,7 @@ if main_clips:
 
         sys.stderr.write('    Pass 1/2...\n')
         for attempt in range(3):
-            cmd = ['ffmpeg', '-y', '-v', 'error', '-i', src,
+            cmd = ['ffmpeg', '-y', '-v', 'error', '-stats', '-i', src,
                    '-map', '0:v:0', '-c:v', enc_lib, '-preset', main_preset,
                    '-b:v', main_bitrate]
             if not is_hevc:
@@ -1879,7 +1884,7 @@ if main_clips:
         pass2_ok = False
         sys.stderr.write('    Pass 2/2...\n')
         for attempt in range(3):
-            cmd = ['ffmpeg', '-y', '-v', 'error', '-i', src,
+            cmd = ['ffmpeg', '-y', '-v', 'error', '-stats', '-i', src,
                    '-map', '0:v:0', '-c:v', enc_lib, '-preset', main_preset,
                    '-b:v', main_bitrate, '-maxrate', main_maxrate, '-bufsize', main_bufsize]
             if not is_hevc:
