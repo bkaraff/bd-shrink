@@ -1808,9 +1808,9 @@ with open('{}/.clip_precompute.txt'.format(work_dir), encoding='utf-8') as f:
 total_clips = len(extras_clips) + len(main_clips)
 clip_idx = 0
 if not no_extras and not movie_only:
-     for i, clip in enumerate(extras_clips):
-         src = clip_source(clip)
-         out_video = os.path.join(encode_dir, '{}_video.{}'.format(clip, video_ext))
+    for i, clip in enumerate(extras_clips):
+        src = clip_source(clip)
+        out_video = os.path.join(encode_dir, '{}_video.{}'.format(clip, video_ext))
         cd = clip_data.get(clip, {'aud':0, 'sub':0, 'h':1080})
         src_aud, src_sub, src_height = cd['aud'], cd['sub'], cd['h']
 
@@ -1892,9 +1892,9 @@ if not no_extras and not movie_only:
 
 # --- Encode main movie ---
 if main_clips:
-     for clip in main_clips:
-         src = clip_source(clip)
-         out_video = os.path.join(encode_dir, '{}_video.{}'.format(clip, video_ext))
+    for clip in main_clips:
+        src = clip_source(clip)
+        out_video = os.path.join(encode_dir, '{}_video.{}'.format(clip, video_ext))
         pass_log = os.path.join(work_dir, pass_prefix + '_{}.log'.format(clip))
         cd = clip_data.get(clip, {'aud':0, 'sub':0, 'h':1080})
         src_aud, src_sub = cd['aud'], cd['sub']
@@ -1920,17 +1920,17 @@ if main_clips:
                     bitrate = main_audio_bitrate if actual_audio_idx == 0 else commentary_audio_bitrate
                     audio_args += ['-map', '0:a:{}'.format(ai), '-c:a', 'ac3',
                                    '-b:a', bitrate, out_path]
-                 actual_audio_idx += 1
-             first_audio = os.path.join(encode_dir, '{}_audio_0.ac3'.format(clip))
-             if actual_audio_idx > 0 and run_ff(audio_args, out_file=first_audio):
-                 audio_tracks = actual_audio_idx
-                 # Verify all expected tracks exist (resume safety: catch partial/missing tracks on re-run)
-                 for ai in range(actual_audio_idx):
-                     if not os.path.isfile(os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, ai))):
-                         audio_tracks = 0
-                         break
+                actual_audio_idx += 1
+            first_audio = os.path.join(encode_dir, '{}_audio_0.ac3'.format(clip))
+            if actual_audio_idx > 0 and run_ff(audio_args, out_file=first_audio):
+                audio_tracks = actual_audio_idx
+                # Verify all expected tracks exist (resume safety: catch partial/missing tracks on re-run)
+                for ai in range(actual_audio_idx):
+                    if not os.path.isfile(os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, ai))):
+                        audio_tracks = 0
+                        break
 
-         # Subtitle extraction
+        # Subtitle extraction
         sub_tracks = 0
         if src_sub > 0:
             sub_codecs = get_sub_codecs(clip)
@@ -1955,39 +1955,39 @@ if main_clips:
         if audio_tracks == 0:
             sys.stderr.write('  (video-only)\n')
 
-         # Pass 1
-         # Helper to detect passlog for any encoder (x264 uses -0.log, x265 may vary)
-         def passlog_exists():
-             return bool(glob.glob(pass_log + '*'))
-         
-         # Clean orphaned passlogs
-         for f in glob.glob(pass_log + '*'):
-             try: os.remove(f)
-             except: pass
-
-         sys.stderr.write('    Pass 1/2...\n')
-         for attempt in range(3):
-             cmd = ['ffmpeg', '-y', '-v', 'error', '-stats', '-i', src,
-                    '-map', '0:v:0', '-c:v', enc_lib, '-preset', main_preset,
-                    '-b:v', main_bitrate]
-             if not is_hevc:
-                 cmd += ['-x264opts', bd_x264_opts]
-             cmd += ['-pass', '1', '-passlogfile', pass_log,
-                     '-an', '-f', 'null', '/dev/null']
-             cmd = apply_nice(cmd)
-             try:
-                 r = subprocess.run(cmd, timeout=None, capture_output=False)
-                 if r.returncode == 0:
-                     break
-             except:
-                 pass
-             if passlog_exists():
-                 break  # stats file exists = pass 1 actually finished
-             sys.stderr.write('  Pass 1 attempt {} failed - retrying\n'.format(attempt + 1))
-
-         if not passlog_exists():
-             sys.stderr.write('  Pass 1 failed - skipping\n')
-             continue
+        # Pass 1
+        # Helper to detect passlog for any encoder (x264 uses -0.log, x265 may vary)
+        def passlog_exists():
+            return bool(glob.glob(pass_log + '*'))
+        
+        # Clean orphaned passlogs
+        for f in glob.glob(pass_log + '*'):
+            try: os.remove(f)
+            except: pass
+        
+        sys.stderr.write('    Pass 1/2...\n')
+        for attempt in range(3):
+            cmd = ['ffmpeg', '-y', '-v', 'error', '-stats', '-i', src,
+                   '-map', '0:v:0', '-c:v', enc_lib, '-preset', main_preset,
+                   '-b:v', main_bitrate]
+            if not is_hevc:
+                cmd += ['-x264opts', bd_x264_opts]
+            cmd += ['-pass', '1', '-passlogfile', pass_log,
+                    '-an', '-f', 'null', '/dev/null']
+            cmd = apply_nice(cmd)
+            try:
+                r = subprocess.run(cmd, timeout=None, capture_output=False)
+                if r.returncode == 0:
+                    break
+            except:
+                pass
+            if passlog_exists():
+                break  # stats file exists = pass 1 actually finished
+            sys.stderr.write('  Pass 1 attempt {} failed - retrying\n'.format(attempt + 1))
+        
+        if not passlog_exists():
+            sys.stderr.write('  Pass 1 failed - skipping\n')
+            continue
 
         # Pass 2
         pass2_ok = False
