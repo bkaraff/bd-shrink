@@ -82,17 +82,33 @@ die()  { echo "ERROR: $*" >&2; exit 1; }
 warn() { echo "WARN:  $*" >&2; }
 log()  { printf '[%02d:%02d:%02d] %s\n' $((SECONDS/3600)) $(((SECONDS%3600)/60)) $((SECONDS%60)) "$*"; }
 info() { echo "       $*"; }
-trap 'echo "FATAL: line $LINENO exit $?" >&2' ERR
+
+# Cleanup function for ISO mounts/extracts
+cleanup_iso() {
+    [[ -z "${ISO_MOUNT_POINT:-}" ]] && return 0
+    [[ ! -e "$ISO_MOUNT_POINT" ]] && return 0
+    
+    # Try to unmount first (if mounted)
+    if mountpoint -q "$ISO_MOUNT_POINT" 2>/dev/null; then
+        umount "$ISO_MOUNT_POINT" 2>/dev/null || true
+    fi
+    
+    # Clean up the mount/extract directory
+    rm -rf "$ISO_MOUNT_POINT" 2>/dev/null || true
+}
+
+trap 'rc=$?; cleanup_iso; echo "FATAL: line $LINENO exit $rc" >&2' ERR
 
 # Run ffmpeg via systemd-run --user --wait.
 # The command runs as a transient systemd service, NOT as a child of bash.
 # Even if the shell crashes, the service continues to completion.
+# Use --pipe to forward output/error to caller's fds (for redirection/capture).
 run_ff() {
-    local nice_prop=()
-    if [[ "${NICE:-0}" -gt 0 ]]; then
-        nice_prop=(--property=Nice="$NICE")
-    fi
-    systemd-run --user --wait -q -u "bd_ff.${RANDOM}.$$" --setenv=PATH=/usr/local/bin:/usr/bin:/bin "${nice_prop[@]}" -- "$@"
+     local nice_prop=()
+     if [[ "${NICE:-0}" -gt 0 ]]; then
+         nice_prop=(--property=Nice="$NICE")
+     fi
+     systemd-run --user --wait --pipe -q -u "bd_ff.${RANDOM}.$$" --setenv=PATH=/usr/local/bin:/usr/bin:/bin "${nice_prop[@]}" -- "$@"
 }
 
 usage() {
@@ -225,9 +241,16 @@ run_tui() {
                     fi
                 fi
 
-                if [[ -n "$SOURCE" ]]; then
-                    break  # valid source found
-                fi
+                 if [[ -n "$SOURCE" ]]; then
+                     # Validate that video/ISO files have supported extensions
+                     if [[ -f "$SOURCE" ]] && ! [[ "${SOURCE,,}" =~ \.(mkv|mp4|m4v|iso)$ ]]; then
+                         warn "Unsupported file format: ${SOURCE##*/}"
+                         warn "Supported: .mkv, .mp4, .m4v, .iso (or BDMV folders)"
+                         SOURCE=""  # reset so we loop and retry
+                     else
+                         break  # valid source found
+                     fi
+                 fi
 
                 warn "No BDMV or video file found directly under: $selected"
                 warn "Browse deeper and select the folder containing BDMV/ or a video file."
@@ -625,6 +648,14 @@ done
 # Validate codec
 [[ "$CODEC" =~ ^(h264|hevc)$ ]] || die "Invalid --codec $CODEC — use h264 or hevc"
 
+# Validate target GB
+[[ "$TARGET_GB" =~ ^[0-9]+$ ]] || die "Invalid --target $TARGET_GB — must be a positive integer (GB)"
+
+# Validate audio bitrate arguments
+[[ "$MAIN_AUDIO_BITRATE" =~ ^[0-9]+k?$ ]] || die "Invalid --main-audio $MAIN_AUDIO_BITRATE — use format: 640k or 640"
+[[ "$EXTRAS_AUDIO_BITRATE" =~ ^[0-9]+k?$ ]] || die "Invalid --extras-ab $EXTRAS_AUDIO_BITRATE — use format: 128k or 128"
+[[ "$COMMENTARY_AUDIO_BITRATE" =~ ^[0-9]+k?$ ]] || die "Invalid --commentary-ab $COMMENTARY_AUDIO_BITRATE — use format: 128k or 128"
+
 # Validate nice value
 [[ "$NICE" =~ ^[0-9]+$ ]] || die "Invalid --nice value $NICE — must be a non-negative integer"
 [[ "$NICE" -le 19 ]] || die "Invalid --nice value $NICE — must be 0-19"
@@ -665,7 +696,41 @@ fi
 [[ -z "$SOURCE" ]] && die "Source folder required (-s)"
 
 MKV_INPUT=false
-if [[ -f "$SOURCE" ]] && [[ "${SOURCE,,}" =~ \.(mkv|mp4|m4v)$ ]]; then
+ISO_INPUT=false
+ISO_MOUNT_POINT=""
+
+# Check for ISO input file
+if [[ -f "$SOURCE" ]] && [[ "${SOURCE,,}" =~ \.iso$ ]]; then
+    ISO_INPUT=true
+    # Create a temporary mount point for the ISO
+    ISO_MOUNT_POINT=$(mktemp -d "/tmp/bd_shrink_iso.XXXXXX")
+    
+    # Try to mount the ISO (read-only)
+    if ! mount -o loop,ro "$SOURCE" "$ISO_MOUNT_POINT" 2>/dev/null; then
+        # Fallback: try extracting with bsdtar or 7z
+        if command -v bsdtar &>/dev/null; then
+            log "Extracting ISO with bsdtar..."
+            bsdtar -xf "$SOURCE" -C "$ISO_MOUNT_POINT" 2>/dev/null || die "Failed to extract ISO file"
+        elif command -v 7z &>/dev/null; then
+            log "Extracting ISO with 7z..."
+            7z x "$SOURCE" -o"$ISO_MOUNT_POINT" -y >/dev/null 2>&1 || die "Failed to extract ISO file"
+        else
+            rm -rf "$ISO_MOUNT_POINT"
+            die "Cannot mount or extract ISO. Install bsdtar or 7z, or use --mount to pre-mount the ISO"
+        fi
+    fi
+    
+    # Find BDMV folder inside extracted/mounted ISO
+    if [[ -d "$ISO_MOUNT_POINT/BDMV" ]]; then
+        SOURCE="$ISO_MOUNT_POINT/BDMV"
+        log "ISO extracted/mounted: $SOURCE"
+    elif [[ -d "$ISO_MOUNT_POINT/VIDEO_TS" ]]; then
+        die "DVD structure detected (VIDEO_TS), not Blu-ray (BDMV). This tool only handles BD discs."
+    else
+        rm -rf "$ISO_MOUNT_POINT"
+        die "No BDMV folder found inside ISO file"
+    fi
+elif [[ -f "$SOURCE" ]] && [[ "${SOURCE,,}" =~ \.(mkv|mp4|m4v)$ ]]; then
     MKV_INPUT=true
     MOVIE_ONLY=true
 fi
@@ -696,8 +761,8 @@ if [[ -d "$SOURCE" ]] && [[ ! -f "$SOURCE/index.bdmv" ]] && ! $MKV_INPUT; then
     fi
 fi
 
-if [[ ! -d "$SOURCE" ]] && ! $MKV_INPUT; then
-    die "Source must be a BDMV folder (with index.bdmv) or video file (.mkv/.mp4/.m4v)"
+if [[ ! -d "$SOURCE" ]] && ! $MKV_INPUT && ! $ISO_INPUT; then
+    die "Source must be a BDMV folder (with index.bdmv), video file (.mkv/.mp4/.m4v), or ISO image (.iso)"
 fi
 
 if ! $MKV_INPUT; then
@@ -900,7 +965,9 @@ for c in sorted(clips):
 PYEOF
 )
 
-log "Found $(echo "$all_clips" | wc -l) unique M2TS clips"
+clip_count=$(echo "$all_clips" | wc -l)
+[[ -z "$all_clips" ]] && clip_count=0
+log "Found $clip_count unique M2TS clips"
 
 # Convert bash booleans to Python-safe strings
 if $KEEP_ONE; then PY_KEEP_ONE="True"; else PY_KEEP_ONE="False"; fi
@@ -1257,6 +1324,9 @@ done
 log "Extras: ${#EXTRAS_PLAYLISTS[@]} playlist(s)"
 log "Menus: ${#MENU_PLAYLISTS[@]} playlist(s) + ${orphan_count} orphan clips"
 
+# Verify a main movie was identified
+[[ ${#MAIN_PLAYLISTS[@]} -gt 0 ]] || die "No main movie playlist identified. Check the source disc structure."
+
 # ─── Phase 3: Budget ─────────────────────────────────────────────────────────
 
 log "Phase 3: Calculating space budget..."
@@ -1371,6 +1441,7 @@ for pl_name in main_pls:
 
 main_audio_size = 0
 main_audio_tracks = 0
+main_audio_count = 0  # Initialize to avoid NameError if duration is 0
 if total_main_dur > 0:
     # Use actual audio track count from the first main clip, capped at 8
     first_cid = next(iter(main_clips)) if main_clips else None
@@ -1561,9 +1632,9 @@ rm -f "$PRECOMPUTE_PY"
 
 # Read budget values (builtins only)
 {
-    read MAIN_BITRATE
-    read MAIN_MAXRATE
-    read MAIN_BUFSIZE
+    read MAIN_BITRATE || true
+    read MAIN_MAXRATE || true
+    read MAIN_BUFSIZE || true
 } < "$WORK_DIR/.budget_values.txt"
 [[ -z "$MAIN_BITRATE" ]] && MAIN_BITRATE=20000000
 [[ -z "$MAIN_MAXRATE" ]] && MAIN_MAXRATE=22000000
@@ -1591,14 +1662,17 @@ while read -r cid; do
     ALL_CLIP_IDS+="$cid"$'\n'
 done < "$WORK_DIR/.all_clips.txt"
 
+# Trim trailing newlines from clip lists (consistent for reuse)
+EXTRAS_CLIPS="${EXTRAS_CLIPS%$'\n'}"
+MAIN_CLIPS="${MAIN_CLIPS%$'\n'}"
+ALL_CLIP_IDS="${ALL_CLIP_IDS%$'\n'}"
+
 # Common x264 BD-compat opts
 BD_X264_OPTS="bluray-compat=1:vbv-maxrate=40000:vbv-bufsize=30000"
 
 # Encode extras (single-pass CRF, downscale to 720p)
 if [[ -n "$EXTRAS_CLIPS" ]] && ! $NO_EXTRAS && ! $MOVIE_ONLY; then
     log "Encoding extras..."
-    # Trim trailing newline from clip list
-    EXTRAS_CLIPS="${EXTRAS_CLIPS%$'\n'}"
 fi
 
 # Encode main movie (two-pass VBR)
@@ -1734,9 +1808,9 @@ with open('{}/.clip_precompute.txt'.format(work_dir), encoding='utf-8') as f:
 total_clips = len(extras_clips) + len(main_clips)
 clip_idx = 0
 if not no_extras and not movie_only:
-    for i, clip in enumerate(extras_clips):
-        src = clip_source(clip)
-        out_video = os.path.join(encode_dir, '{}_video.' + video_ext).format(clip)
+     for i, clip in enumerate(extras_clips):
+         src = clip_source(clip)
+         out_video = os.path.join(encode_dir, '{}_video.{}'.format(clip, video_ext))
         cd = clip_data.get(clip, {'aud':0, 'sub':0, 'h':1080})
         src_aud, src_sub, src_height = cd['aud'], cd['sub'], cd['h']
 
@@ -1818,9 +1892,9 @@ if not no_extras and not movie_only:
 
 # --- Encode main movie ---
 if main_clips:
-    for clip in main_clips:
-        src = clip_source(clip)
-        out_video = os.path.join(encode_dir, '{}_video.' + video_ext).format(clip)
+     for clip in main_clips:
+         src = clip_source(clip)
+         out_video = os.path.join(encode_dir, '{}_video.{}'.format(clip, video_ext))
         pass_log = os.path.join(work_dir, pass_prefix + '_{}.log'.format(clip))
         cd = clip_data.get(clip, {'aud':0, 'sub':0, 'h':1080})
         src_aud, src_sub = cd['aud'], cd['sub']
@@ -1846,12 +1920,17 @@ if main_clips:
                     bitrate = main_audio_bitrate if actual_audio_idx == 0 else commentary_audio_bitrate
                     audio_args += ['-map', '0:a:{}'.format(ai), '-c:a', 'ac3',
                                    '-b:a', bitrate, out_path]
-                actual_audio_idx += 1
-            first_audio = os.path.join(encode_dir, '{}_audio_0.ac3'.format(clip))
-            if actual_audio_idx > 0 and run_ff(audio_args, out_file=first_audio):
-                audio_tracks = actual_audio_idx
+                 actual_audio_idx += 1
+             first_audio = os.path.join(encode_dir, '{}_audio_0.ac3'.format(clip))
+             if actual_audio_idx > 0 and run_ff(audio_args, out_file=first_audio):
+                 audio_tracks = actual_audio_idx
+                 # Verify all expected tracks exist (resume safety: catch partial/missing tracks on re-run)
+                 for ai in range(actual_audio_idx):
+                     if not os.path.isfile(os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, ai))):
+                         audio_tracks = 0
+                         break
 
-        # Subtitle extraction
+         # Subtitle extraction
         sub_tracks = 0
         if src_sub > 0:
             sub_codecs = get_sub_codecs(clip)
@@ -1876,36 +1955,39 @@ if main_clips:
         if audio_tracks == 0:
             sys.stderr.write('  (video-only)\n')
 
-        # Pass 1
-        pass_log_actual = pass_log + '-0.log'
-        # Clean orphaned passlogs
-        for f in glob.glob(pass_log + '*'):
-            try: os.remove(f)
-            except: pass
+         # Pass 1
+         # Helper to detect passlog for any encoder (x264 uses -0.log, x265 may vary)
+         def passlog_exists():
+             return bool(glob.glob(pass_log + '*'))
+         
+         # Clean orphaned passlogs
+         for f in glob.glob(pass_log + '*'):
+             try: os.remove(f)
+             except: pass
 
-        sys.stderr.write('    Pass 1/2...\n')
-        for attempt in range(3):
-            cmd = ['ffmpeg', '-y', '-v', 'error', '-stats', '-i', src,
-                   '-map', '0:v:0', '-c:v', enc_lib, '-preset', main_preset,
-                   '-b:v', main_bitrate]
-            if not is_hevc:
-                cmd += ['-x264opts', bd_x264_opts]
-            cmd += ['-pass', '1', '-passlogfile', pass_log,
-                    '-an', '-f', 'null', '/dev/null']
-            cmd = apply_nice(cmd)
-            try:
-                r = subprocess.run(cmd, timeout=None, capture_output=False)
-                if r.returncode == 0:
-                    break
-            except:
-                pass
-            if os.path.isfile(pass_log_actual):
-                break  # stats file exists = pass 1 actually finished
-            sys.stderr.write('  Pass 1 attempt {} failed - retrying\n'.format(attempt + 1))
+         sys.stderr.write('    Pass 1/2...\n')
+         for attempt in range(3):
+             cmd = ['ffmpeg', '-y', '-v', 'error', '-stats', '-i', src,
+                    '-map', '0:v:0', '-c:v', enc_lib, '-preset', main_preset,
+                    '-b:v', main_bitrate]
+             if not is_hevc:
+                 cmd += ['-x264opts', bd_x264_opts]
+             cmd += ['-pass', '1', '-passlogfile', pass_log,
+                     '-an', '-f', 'null', '/dev/null']
+             cmd = apply_nice(cmd)
+             try:
+                 r = subprocess.run(cmd, timeout=None, capture_output=False)
+                 if r.returncode == 0:
+                     break
+             except:
+                 pass
+             if passlog_exists():
+                 break  # stats file exists = pass 1 actually finished
+             sys.stderr.write('  Pass 1 attempt {} failed - retrying\n'.format(attempt + 1))
 
-        if not os.path.isfile(pass_log_actual):
-            sys.stderr.write('  Pass 1 failed - skipping\n')
-            continue
+         if not passlog_exists():
+             sys.stderr.write('  Pass 1 failed - skipping\n')
+             continue
 
         # Pass 2
         pass2_ok = False
@@ -1993,16 +2075,33 @@ if $MOVIE_ONLY; then
         echo "MUXOPT --no-pcr-on-video-pid --new-audio-pes --vbr --blu-ray --custom-chapters=${main_chapters}"
     } > "$META_FILE"
 
-    # Count max audio/subtitle tracks across all clips (builtins only)
-    max_audio=0
-    max_subs=0
-    for clip in $MAIN_CLIPS; do
-        a=0; while [[ -f "$ENCODE_DIR/${clip}_audio_${a}.ac3" ]]; do ((++a)); done
-        ((a > max_audio)) && max_audio=$a
-        s=0
-        while [[ -f "$ENCODE_DIR/${clip}_sub_${s}.sup" || -f "$ENCODE_DIR/${clip}_sub_${s}.srt" ]]; do ((++s)); done
-        ((s > max_subs)) && max_subs=$s
-    done
+     # Count max audio/subtitle tracks across all clips (builtins only)
+     max_audio=0
+     max_subs=0
+     for clip in $MAIN_CLIPS; do
+         a=0; while [[ -f "$ENCODE_DIR/${clip}_audio_${a}.ac3" ]]; do ((++a)); done
+         ((a > max_audio)) && max_audio=$a
+         s=0
+         while [[ -f "$ENCODE_DIR/${clip}_sub_${s}.sup" || -f "$ENCODE_DIR/${clip}_sub_${s}.srt" ]]; do ((++s)); done
+         ((s > max_subs)) && max_subs=$s
+     done
+     
+     # Warn if clips have differing track counts (seamless branching edge case)
+     clip_count=0
+     for clip in $MAIN_CLIPS; do ((++clip_count)); done
+     if [[ $clip_count -gt 1 ]]; then
+         audio_mismatch=false sub_mismatch=false
+         for clip in $MAIN_CLIPS; do
+             a=0; while [[ -f "$ENCODE_DIR/${clip}_audio_${a}.ac3" ]]; do ((++a)); done
+             [[ $a -ne $max_audio ]] && audio_mismatch=true
+             s=0; while [[ -f "$ENCODE_DIR/${clip}_sub_${s}.sup" || -f "$ENCODE_DIR/${clip}_sub_${s}.srt" ]]; do ((++s)); done
+             [[ $s -ne $max_subs ]] && sub_mismatch=true
+         done
+         if $audio_mismatch || $sub_mismatch; then
+             warn "Multi-clip title with track count mismatches detected (seamless branching)"
+             warn "  Some clips may have gaps in audio/subtitle tracks — test playback carefully"
+         fi
+     fi
 
     # Write video tracks
     first=true
@@ -2089,9 +2188,9 @@ else
     mkdir -p "$DST/BDMV/BACKUP/PLAYLIST" "$DST/BDMV/BACKUP/CLIPINF"
     mkdir -p "$DST/CERTIFICATE"
 
-    # Copy source BD metadata
-    run_ff cp "$SOURCE/index.bdmv" "$DST/BDMV/"
-    run_ff cp "$SOURCE/MovieObject.bdmv" "$DST/BDMV/"
+     # Copy source BD metadata
+     run_ff cp "$SOURCE/index.bdmv" "$DST/BDMV/"
+     if [[ -f "$SOURCE/MovieObject.bdmv" ]]; then run_ff cp "$SOURCE/MovieObject.bdmv" "$DST/BDMV/"; fi
     [[ -d "$SOURCE/../CERTIFICATE" ]] && run_ff cp -r "$SOURCE/../CERTIFICATE/"* "$DST/CERTIFICATE/" 2>/dev/null || true
     [[ -d "$SOURCE/CERTIFICATE" ]] && run_ff cp -r "$SOURCE/CERTIFICATE/"* "$DST/CERTIFICATE/" 2>/dev/null || true
 
@@ -2143,16 +2242,21 @@ else
             continue
         }
 
-        # Copy remuxed output to destination
-        new_m2ts=("$tmpout/BDMV/STREAM/"*.m2ts)
-        new_clpi=("$tmpout/BDMV/CLIPINF/"*.clpi)
-        if [[ -n "${new_m2ts[0]:-}" ]] && [[ -n "${new_clpi[0]:-}" ]]; then
-            run_ff cp "$new_m2ts" "$DST/BDMV/STREAM/${cid}.m2ts" || true
-            run_ff cp "$new_clpi" "$DST/BDMV/CLIPINF/${cid}.clpi" || true
-            log "    done: ${cid}.m2ts"
-        else
-            warn "tsMuxeR produced no output for ${cid}"
-        fi
+         # Copy remuxed output to destination
+         new_m2ts=("$tmpout/BDMV/STREAM/"*.m2ts)
+         new_clpi=("$tmpout/BDMV/CLIPINF/"*.clpi)
+         if [[ -n "${new_m2ts[0]:-}" ]] && [[ -n "${new_clpi[0]:-}" ]]; then
+             # Warn if tsMuxeR split the clip into multiple parts (unsupported in surgical mode)
+             if [[ ${#new_m2ts[@]} -gt 1 ]]; then
+                 warn "  tsMuxeR split clip ${cid} into ${#new_m2ts[@]} parts (only using first)"
+                 warn "  For multi-part remuxing, use --movie-only mode instead"
+             fi
+             run_ff cp "$new_m2ts" "$DST/BDMV/STREAM/${cid}.m2ts" || true
+             run_ff cp "$new_clpi" "$DST/BDMV/CLIPINF/${cid}.clpi" || true
+             log "    done: ${cid}.m2ts"
+         else
+             warn "tsMuxeR produced no output for ${cid}"
+         fi
     done
 
     # Build map of extra clip IDs for --no-extras filtering
@@ -2207,9 +2311,9 @@ else
         [[ -d "$SOURCE/$dir" ]] && run_ff cp -r "$SOURCE/$dir" "$DST/BDMV/" 2>/dev/null || true
     done
 
-    # Copy BACKUP
-    run_ff cp "$SOURCE/index.bdmv" "$DST/BDMV/BACKUP/" || true
-    run_ff cp "$SOURCE/MovieObject.bdmv" "$DST/BDMV/BACKUP/" || true
+     # Copy BACKUP
+     run_ff cp "$SOURCE/index.bdmv" "$DST/BDMV/BACKUP/" || true
+     if [[ -f "$SOURCE/MovieObject.bdmv" ]]; then run_ff cp "$SOURCE/MovieObject.bdmv" "$DST/BDMV/BACKUP/"; fi
     run_ff cp "$SOURCE/BACKUP/PLAYLIST/"*.mpls "$DST/BDMV/BACKUP/PLAYLIST/" 2>/dev/null || true
     run_ff cp "$DST/BDMV/CLIPINF/"*.clpi "$DST/BDMV/BACKUP/CLIPINF/" 2>/dev/null || true
 
@@ -2296,7 +2400,16 @@ if [[ -d "$DST" ]] && [[ -d "$DST/BDMV" ]]; then
 fi
 
 # Final output size check
-if [[ -e "$DST" ]]; then
+if $OUTPUT_ISO && [[ -f "$ISO_OUT" ]]; then
+    # For ISO, check the actual ISO file size
+    output_bytes=$(du -sb "$ISO_OUT" | cut -f1)
+    oversized=$(echo "$output_bytes > $TARGET_GB * 1073741824" | bc)
+    if [[ "$oversized" -eq 1 ]]; then
+        output_gb=$(echo "scale=2; $output_bytes / 1073741824" | bc)
+        warn "ISO file size (${output_gb} GB) exceeds target (${TARGET_GB} GB)"
+    fi
+elif [[ -e "$DST" ]]; then
+    # For BDMV folder, check the folder size
     output_bytes=$(du -sb "$DST" | cut -f1)
     oversized=$(echo "$output_bytes > $TARGET_GB * 1073741824" | bc)
     if [[ "$oversized" -eq 1 ]]; then
@@ -2326,6 +2439,10 @@ else
     [[ -n "${REBUILD_DIR:-}" ]] && rm -rf "$REBUILD_DIR" 2>/dev/null || true
     log "Working files retained at: $WORK_DIR (delete manually when satisfied)"
 fi
+
+# Clean up ISO mount/extract if applicable
+cleanup_iso
+
 if ! $BURN; then
     log "IMPORTANT: Test the output in VLC or mpv before burning to disc!"
 fi
