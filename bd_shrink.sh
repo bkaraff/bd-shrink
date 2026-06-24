@@ -2159,6 +2159,19 @@ else
         run_ff cp "$SOURCE/CLIPINF/${cid}.clpi" "$DST/BDMV/CLIPINF/${cid}.clpi" || true
     done
 
+    # Copy orphan clips — clips in source STREAM/CLIPINF not referenced by any
+    # playlist but still part of the BD structure (e.g. FirstPlayback assets
+    # referenced directly by MovieObjects or BD-J objects)
+    for m2ts in "$SOURCE/STREAM/"*.m2ts; do
+        [[ -f "$m2ts" ]] || continue
+        fname="${m2ts##*/}"
+        cid="${fname%.m2ts}"
+        [[ -f "$DST/BDMV/STREAM/${cid}.m2ts" ]] && continue
+        log "  Copying orphan clip: ${cid}.m2ts"
+        run_ff cp "$m2ts" "$DST/BDMV/STREAM/${cid}.m2ts" || true
+        [[ -f "$SOURCE/CLIPINF/${cid}.clpi" ]] && run_ff cp "$SOURCE/CLIPINF/${cid}.clpi" "$DST/BDMV/CLIPINF/${cid}.clpi" || true
+    done
+
     # Copy all MPLS files
     run_ff cp "$SOURCE/PLAYLIST/"*.mpls "$DST/BDMV/PLAYLIST/" 2>/dev/null || true
 
