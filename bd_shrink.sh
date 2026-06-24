@@ -783,10 +783,37 @@ def parse_mpls(path):
         })
         off += 2 + plen
 
-    # Skip subpaths to reach AppInfoPlayList
+    # Parse SubPaths: extract SubPlayItem clips, then advance to AppInfoPlayList.
+    # BDMV spec: SubPath length is a 4-byte uint (not 2-byte as previously coded).
+    # SubPath layout:
+    #   length(4) | type(1) | repeat(1) | reserved(2) | num_sub_playitems(2) | SubPlayItems...
+    # SubPlayItem layout:
+    #   length(2) | clip_id(5) | codec(4) | flags... | IN_time(4) | OUT_time(4) | ...
+    subpath_items = []
     for _ in range(num_subpaths):
-        splen = struct.unpack_from('>H', data, off)[0]
-        off += 2 + splen
+        splen = struct.unpack_from('>I', data, off)[0]
+        sub_end = off + 4 + splen
+        sub_off = off + 4
+        if sub_off + 6 <= sub_end and sub_off + 6 <= len(data):
+            num_spi = struct.unpack_from('>H', data, sub_off + 4)[0]
+            spi_off = sub_off + 6
+            for _ in range(num_spi):
+                if spi_off + 11 > sub_end or spi_off + 11 > len(data):
+                    break
+                spi_len = struct.unpack_from('>H', data, spi_off)[0]
+                clip = data[spi_off+2:spi_off+7].decode('ascii', errors='replace')
+                codec = data[spi_off+7:spi_off+11].decode('ascii', errors='replace')
+                subpath_items.append({
+                    'clip': clip,
+                    'codec': codec,
+                    'in_time': 0,
+                    'out_time': 0,
+                    'duration': 0,
+                })
+                spi_off += 2 + spi_len
+        off = sub_end
+
+    items.extend(subpath_items)
 
     # Read PlayList_type from AppInfoPlayList (1 = menu/interactive)
     playlist_type = 0

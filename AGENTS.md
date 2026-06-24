@@ -5,7 +5,7 @@
 Single-file **bash** script that shrinks BD50 Blu-ray backups or video files to BD25-compatible BDMV folders. Built-in Python heredocs handle MPLS binary parsing, demuxing, and data processing. Output is authored with `tsMuxeR`.
 
 - Source: BDMV folder, parent folder containing `BDMV/`, or a single video file (`.mkv`/`.mp4`/`.m4v`)
-- `--movie-only` is the reliable mode; default surgical mode only works cleanly on discs with IGS (bitmap) menus
+- `--movie-only` is the reliable mode; default surgical mode preserves original menus and structure (IGS/HDMV and BD-J)
 - `--codec hevc` uses `libx265` when `tsMuxeR` supports `V_MPEGH/ISO/HEVC`
 
 ## Key commands
@@ -20,7 +20,7 @@ bash -n bd_shrink.sh
 # Movie-only — fresh BD, no menus, works on any disc including BD-J
 ./bd_shrink.sh -s /path/to/BDMV -o /output -f --movie-only
 
-# Surgical — keep menus; only reliable for IGS-menu discs
+# Surgical — keep menus; preserves IGS and BD-J structure
 ./bd_shrink.sh -s /path/to/BDMV -o /output -f
 
 # Single video file (forces movie-only)
@@ -56,7 +56,7 @@ Phases:
 | Mode | Result | Caveats |
 |------|--------|---------|
 | `--movie-only` | Fresh BD with one main-movie playlist | Always works; no menus |
-| Default (surgical) | Original menus/structure preserved | Only reliable for IGS menus; BD-J will break |
+| Default (surgical) | Original menus/structure preserved | Works for IGS and BD-J; re-encoded clips get new CLPI metadata |
 
 ## Flag interactions
 
@@ -72,7 +72,8 @@ Phases:
 Critical details:
 
 - `genisoimage` and `growisofs` are required for direct burning
-- `MKISOFS=genisoimage` is set when calling `growisofs` because `/usr/bin/mkisofs` on this system is `xorriso`'s stub and does **not** support `-udf`
+- `burn_output()` resolves full binary paths via `command -v` before passing to `run_ff()`, because `run_ff()` launches via `systemd-run` with a restricted `PATH` (`/usr/local/bin:/usr/bin:/bin`) that may not include Homebrew or other non-standard bin directories
+- `MKISOFS` is set to the full path of `genisoimage` when calling `growisofs` because `/usr/bin/mkisofs` on this system is `xorriso`'s stub and does **not** support `-udf`
 - `-allow-limited-size` is required; M2TS files commonly exceed 4 GiB
 - UDF 2.00 is what `genisoimage` produces; players that strictly require UDF 2.50 may still reject the disc
 - No MD5 verification; growisofs handles BD-R write verification internally
@@ -86,6 +87,14 @@ Menu clips are excluded from re-encoding via three signals:
 3. Zero chapter marks + duration < 120 s (warnings, logos, transitions)
 
 Their clips are copied verbatim so IGS (Interactive Graphics) overlays stay intact. Anything else classified as an extra is re-encoded to 720p.
+
+### SubPath clips
+
+The MPLS parser extracts SubPlayItem clips from SubPath entries (not just the main PlayList). SubPath length is a 4-byte uint per the BDMV spec. SubPath clips are added to the playitems list with duration 0 so they flow through inventory → classification → rebuild without affecting the playlist's total duration. This catches clips referenced only via sub-paths (e.g. menu background video, PiP, seamless branching).
+
+### Orphan-clip safety net
+
+After copying all playlist-referenced clips, the surgical rebuild does a final pass over `SOURCE/STREAM/*.m2ts` and copies any file not already in the output. This catches clips that exist on the disc but are referenced by navigation structures outside of MPLS (e.g. `MovieObject.bdmv` FirstPlayback/TopMenu entries).
 
 ## Dependencies
 
@@ -108,7 +117,7 @@ Default: `${OUTPUT}.work` (sibling of output). Configurable via `-w / --work`. W
 
 ## Logging
 
-Mirrored to a log file in `/var/log/bd-shrink` if writable, otherwise `~/.local/share/bd-shrink/logs`, named `bd_shrink_YYYYMMDD_HHMMSS.log`.
+Mirrored to a log file in `/var/log/bd-shrink` if writable, otherwise `~/.local/share/bd-shrink/logs`, named `bd_shrink_YYYYMMDD_HHMMSS.log`. Also mirrored to `${WORK_DIR}/bd_shrink.log` for convenience during resume.
 
 ## TUI mode
 
@@ -127,5 +136,5 @@ Auto-launched when `-s`/`-o` are omitted (requires `gum`). Source selection retr
 
 ## Known issues
 
-- Surgical mode will break on BD-J discs; use `--movie-only` for those.
+- BD-J discs with Java code that depends on specific CLPI metadata (timestamps, PIDs) of re-encoded clips may malfunction. Most BD-J menus only play playlists, so surgical mode works for the majority of discs. If a BD-J disc fails, `--movie-only` is the fallback.
 - Some discs have corrupt H.264 in source clips. The script skips these gracefully; the output will lack video for affected clips but won't fail.
