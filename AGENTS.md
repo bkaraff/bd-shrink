@@ -2,181 +2,139 @@
 
 ## Project overview
 
-Single-file **zsh** script (~1740 lines) that shrinks BD50 Blu-ray backups or MKV files to BD25-compatible BDMV folders. The `-s` flag accepts BDMV folders or **.mkv files** (MKV forces movie-only mode). Built-in Python heredocs handle MPLS binary parsing, MKV demuxing, and data processing. Output is authored with `tsMuxeR`.
+Single-file **bash** script that shrinks BD50 Blu-ray backups or video files to BD25-compatible BDMV folders. Built-in Python heredocs handle MPLS binary parsing, demuxing, and data processing. Output is authored with `tsMuxeR`.
+
+- Source: BDMV folder, parent folder containing `BDMV/`, or a single video file (`.mkv`/`.mp4`/`.m4v`)
+- `--movie-only` is the reliable mode; default surgical mode preserves original menus and structure (IGS/HDMV and BD-J)
+- `--codec hevc` uses `libx265` when `tsMuxeR` supports `V_MPEGH/ISO/HEVC`
 
 ## Key commands
 
 ```bash
 # Syntax check
-zsh -n bd_shrink.sh
+bash -n bd_shrink.sh
 
-# Interactive TUI (auto-launched when -s/-o are omitted)
+# Interactive TUI (auto-launched when -s/-o omitted)
 ./bd_shrink.sh
 
-# Force TUI even when source/output are provided
-./bd_shrink.sh --tui
-
-# Movie-only (fresh BD, no menus, works on any disc)
+# Movie-only — fresh BD, no menus, works on any disc including BD-J
 ./bd_shrink.sh -s /path/to/BDMV -o /output -f --movie-only
 
-# Surgical (keep menus, IGS only — the default if no --movie-only)
-./bd_shrink.sh -s /path/to/BDMV -o /output -f --keep-one
+# Surgical — keep menus; preserves IGS and BD-J structure
+./bd_shrink.sh -s /path/to/BDMV -o /output -f
 
-# MKV input (forces movie-only mode)
+# Single video file (forces movie-only)
 ./bd_shrink.sh -s movie.mkv -o /output -f
 
-# Dry-run (needs -f if output dir already exists)
-./bd_shrink.sh -s /path/to/BDMV -o /tmp/test -n -f
+# Burn directly to BD-R (pipes genisoimage into growisofs; no temp ISO)
+./bd_shrink.sh -s /path/to/BDMV -o /output -f --movie-only --burn
 
-# Show required dependencies and install commands (no source/output needed)
+# Create ISO for archival + burn
+./bd_shrink.sh -s /path/to/BDMV -o /output -f --movie-only --burn --iso
+
+# Dependency check (no source/output needed)
 ./bd_shrink.sh --install-deps
 ```
 
-`--iso` works with any mode (surgical and movie-only), not just `--movie-only`.
-
-When `-o` points to an existing directory that doesn't already contain `BDMV/`, the script auto-creates a source-named subdirectory (e.g., `-o /mnt/root/` → `/mnt/root/<source-title>/`). This keeps the work directory as a true sibling in the output root. Gated on `-f`.
-
 ## Architecture
 
-Single file `bd_shrink.sh`. Shebang: `#!/usr/bin/env zsh`. No separate library files.
+Single file `bd_shrink.sh`, shebang `#!/usr/bin/env bash`.
 
-**Six labeled phases** in the script (Pre-compute is a sub-step inside Phase 4):
+Phases:
 
-1. **Inventory** — parse `.mpls` (Python heredoc, binary struct), probe `.m2ts` (single Python subprocess); for MKV, demux streams via ffprobe
-2. **Classify** — largest long playlist(s) = main movie (size is the primary signal to avoid bogus playlists that repeat a short clip many times); rest = extras or menus; MKV is always a single movie
-3. **Budget** — calculate remaining space and target bitrate for main movie
-4. **Encode** — pre-compute sub-step (`systemd-run` wrapping `python3 -c` that writes clip metadata), then a bare `python3 -u << PYEOF` heredoc handles ALL extras + main movie encoding via `subprocess.run()`. The heredoc is **not** wrapped in `systemd-run`.
-5. **Rebuild** — surgical (keep original menus) or fresh `tsMuxeR` authoring (`--movie-only`). Uses shell `run_ff` function (systemd-run wrapper) for each `cp`/`tsMuxeR` call.
-6. **Validate** — file count, CLPI verification (builtins only) then print `.work` retention message
+1. **Inventory** — parse `.mpls`, probe `.m2ts` via ffprobe
+2. **Classify** — largest HD playlist(s) = main movie; rest = extras/menus
+3. **Budget** — target bitrate for main movie after accounting for menus + estimated extras
+4. **Encode** — extras at 720p CRF; main movie two-pass VBR
+5. **Rebuild** — surgical (replace M2TS in place, keep menus) or fresh `tsMuxeR` authoring (`--movie-only`)
+6. **Validate** — file/CLPI checks
 
-There are **6 Python heredocs** (PYEOF blocks): MPLS parsing, clip probing, inventory assembly, classification, budget calculation, and encoding. The pre-compute block and MKV playlist creation use `python3 -c` instead.
+**Resumability**: the encode phase skips clips whose output already exists. After a crash or interruption, re-run the same command (without `-f`) to resume from where it left off. Do NOT delete the `.work` directory or use `-f` when resuming.
 
-**Two output modes:**
-- Default (surgical): keeps `index.bdmv`, `MovieObject.bdmv`, all `.mpls`, copies/remuxes M2TS. IGS menus only.
-- `--movie-only`: fresh `tsMuxeR` authoring. No menus. Works on any disc including BD-J.
+## Modes
 
-**Flag interactions:**
-- `--movie-only` implies `--keep-one` (only first main playlist encoded)
-- `--no-extras` skips extras encoding but keeps menus (surgical mode); distinct from `--movie-only` which discards menus entirely
-- `-f` is checked **before** the dry-run exit — you need `-f` even with `-n` if the output directory already exists
+| Mode | Result | Caveats |
+|------|--------|---------|
+| `--movie-only` | Fresh BD with one main-movie playlist | Always works; no menus |
+| Default (surgical) | Original menus/structure preserved | Works for IGS and BD-J; re-encoded clips get new CLPI metadata |
 
-### Subtitle handling
+## Flag interactions
 
-- **SRT** subtitles are extracted from source but **skipped** in the tsMuxeR meta file. tsMuxeR 2.7.0 on Linux lacks font rendering, producing `Can't load symbol code '65' from font` errors.
-- **PGS** subtitles (`.sup` files) pass through correctly as `S_HDMV/PGS`.
-- **DVD/VobSub** subtitles (`dvd_subtitle` codec) are filtered out entirely — not BD-compatible.
+- `--movie-only` implies `--keep-one`
+- `--no-extras` skips extras encoding but keeps menus (surgical only)
+- `-f` is checked **before** dry-run exit — needed even with `-n` if output exists
+- `--iso` creates an ISO; `--burn --iso` also creates one and then burns from it
 
-## The two `run_ff` functions
+## Burn path
 
-There are **two separate** `run_ff` definitions — a shell function and a Python function — serving different phases:
+`--burn` alone pipes `genisoimage -udf -allow-limited-size` directly to `growisofs` — no temp ISO. `--burn --iso` creates an ISO first, then burns it.
 
-**Shell function** (early in file): wraps each command in `systemd-run --user --wait`, making it a transient systemd service rather than a direct child of the shell. Used in Phase 5 (rebuild) for `cp`, `tsMuxeR`, etc. This avoids SIGCHLD because the exiting process is systemd's child, not the shell's.
+Critical details:
 
-**Python function** (inside the encoding heredoc): uses `subprocess.run()` for all ffmpeg calls. Checks `out_file` existence before encoding — **resumable** across crashes.
+- `genisoimage` and `growisofs` are required for direct burning
+- `burn_output()` resolves full binary paths via `command -v` before passing to `run_ff()`, because `run_ff()` launches via `systemd-run` with a restricted `PATH` (`/usr/local/bin:/usr/bin:/bin`) that may not include Homebrew or other non-standard bin directories
+- `MKISOFS` is set to the full path of `genisoimage` when calling `growisofs` because `/usr/bin/mkisofs` on this system is `xorriso`'s stub and does **not** support `-udf`
+- `-allow-limited-size` is required; M2TS files commonly exceed 4 GiB
+- UDF 2.00 is what `genisoimage` produces; players that strictly require UDF 2.50 may still reject the disc
+- No MD5 verification; growisofs handles BD-R write verification internally
 
-## SIGCHLD mitigation strategy
+## Menu preservation (surgical mode)
 
-zsh 5.9 crashes non-deterministically when ANY child process exits. The script minimizes direct shell children:
+Menu clips are excluded from re-encoding via three signals:
 
-| Phase | Strategy | Shell children |
-|-------|----------|----------------|
-| Inventory | Single Python subprocess | 1 |
-| Pre-compute | `systemd-run` wrapping Python | 1 (systemd-run exits quickly) |
-| Encode | Single bare `python3` heredoc | 1 |
-| Rebuild | `systemd-run` per command (shell `run_ff`) | 0 direct (systemd manages) |
-| Validate | Builtins only | 0 |
+1. `PlayList_type == 1` read from the MPLS `AppInfoPlayList` struct
+2. Any playlist sharing a clip with a known menu playlist
+3. Zero chapter marks + duration < 120 s (warnings, logos, transitions)
 
-When the shell crashes mid-encode, restarting the script resumes from where it left off (Python `run_ff` skips existing output files).
+Their clips are copied verbatim so IGS (Interactive Graphics) overlays stay intact. Anything else classified as an extra is re-encoded to 720p.
 
-### Known issue: SIGCHLD crashes persist
+### SubPath clips
 
-Despite the mitigation above, zsh 5.9 still crashes non-deterministically (symptoms: "parse error near \n" at a nonexistent line number, or segfault). These are NOT syntax errors — they are the zsh SIGCHLD bug. The only reliable fix is to **rewrite the script in bash**. No zsh-specific features are actually used:
+The MPLS parser extracts SubPlayItem clips from SubPath entries (not just the main PlayList). SubPath length is a 4-byte uint per the BDMV spec. SubPath clips are added to the playitems list with duration 0 so they flow through inventory → classification → rebuild without affecting the playlist's total duration. This catches clips referenced only via sub-paths (e.g. menu background video, PiP, seamless branching).
 
-```bash
-# zsh                          bash equivalent
-setopt SH_WORD_SPLIT           (default)
-setopt NULL_GLOB               shopt -s nullglob
-```
+### Orphan-clip safety net
 
-Rewriting to bash would eliminate the crash entirely while preserving identical behavior.
-
-## zsh-specific options
-```zsh
-setopt SH_WORD_SPLIT   # split unquoted $var on IFS (like bash default)
-setopt NULL_GLOB       # unmatched globs → empty (like bash nullglob)
-```
+After copying all playlist-referenced clips, the surgical rebuild does a final pass over `SOURCE/STREAM/*.m2ts` and copies any file not already in the output. This catches clips that exist on the disc but are referenced by navigation structures outside of MPLS (e.g. `MovieObject.bdmv` FirstPlayback/TopMenu entries).
 
 ## Dependencies
 
-`tsMuxeR` binary is `tsMuxeR` (capital R), not `tsmuxer`. Installed at `/usr/local/bin/tsMuxeR` v2.7.0.
+| Tool | Purpose | Note |
+|------|---------|------|
+| `ffmpeg` + `ffprobe` | Encoding/probing | rpmfusion-free on Fedora |
+| `tsMuxeR` | BD authoring | v2.7.0 from GitHub binary |
+| `bc` | Math | |
+| `python3` | MPLS parsing, data | |
+| `systemd-run` | Transient services for Phase 5 I/O | Required |
+| `genisoimage` | UDF ISO creation for burn | |
+| `growisofs` | BD-R burning | From `dvd+rw-tools` |
+| `gum` | Optional TUI | |
 
-`systemd-run` is **required** for both the shell `run_ff` function and the pre-compute phase. It is listed in `check_deps` indirectly (via `run_ff`) but not explicitly. If systemd user services aren't available, the script fails at runtime.
-
-`--install-deps` checks all required tools and prints install commands for missing ones (tsMuxeR shows the GitHub download steps; everything else shows `dnf install`). It does NOT auto-install. Optional tools (gum, xorriso) are listed separately. Requires no `-s`/`-o` args — runs and exits immediately.
+Run `./bd_shrink.sh --install-deps` to see install commands.
 
 ## Work directories
 
-Default: `${OUTPUT}.work` (sibling of output, NOT inside it). Configurable via `-w / --work`.
-
-When `-o` points to a parent directory (existing, no `BDMV/`), the script auto-creates a source-named subdirectory so the work directory stays a sibling in the output root rather than mixed in with BDMV/CERTIFICATE.
+Default: `${OUTPUT}.work` (sibling of output). Configurable via `-w / --work`. When `-o` points to an existing parent directory without `BDMV/`, a source-named subdirectory is created; the `.work` directory stays a sibling of that subdirectory.
 
 ## Logging
 
-All output is mirrored to a log file. Default log directory:
-- `/var/log/bd-shrink` if writable without root
-- Otherwise `~/.local/share/bd-shrink/logs`
-
-Log files are named `bd_shrink_YYYYMMDD_HHMMSS.log`.
+Mirrored to a log file in `/var/log/bd-shrink` if writable, otherwise `~/.local/share/bd-shrink/logs`, named `bd_shrink_YYYYMMDD_HHMMSS.log`. Also mirrored to `${WORK_DIR}/bd_shrink.log` for convenience during resume.
 
 ## TUI mode
 
-When run without `-s`/`-o` in an interactive terminal with `gum` installed, the script launches an interactive TUI instead of erroring. Pass `--tui` to force TUI mode even when args are provided.
-
-- **Source selection**: `gum filter` fuzzy finder from `SOURCE_ROOT` (saved at `~/.config/bd-shrink/source_root`), falling back to `gum file` browser from `/data-nvme1` or `$HOME`.
-- **BDMV auto-detection**: after selecting a folder, looks for `index.bdmv`, `BDMV/index.bdmv`, or `*/BDMV/index.bdmv`. If no BDMV found, looks for a video/ISO file directly inside.
-- **Options**: mode, output format, and encoding preset via `gum choose --limit=1`.
-- **Summary**: colorized Catppuccin Mocha box, then action chooser to revise any step before processing.
+Auto-launched when `-s`/`-o` are omitted (requires `gum`). Source selection retries if the chosen folder contains no BDMV or video file, rather than dying.
 
 ## Gotchas
 
-- `git -C ~/projects/bd-shrink push` fails — use `cd` or `workdir` parameter
-- `{1..0}` in zsh expands to `1 0` (descending range, not empty) — use C-style `for ((...))`
-- Use `read < file` for line-oriented metadata reads; the script reads metadata files with `read`/`while read` loops, not `$(< file)`
-- Work dirs from dry-runs accumulate — clean up `<output>.work` regularly
-- **Log buffering**: `stdout` is line-buffered, but Python `sys.stderr` writes are unbuffered with `-u`. Progress may appear after Python exits rather than in real time.
-- `EXTRAS_CLIPS` and `MAIN_CLIPS` have trailing newlines from the `while read` loop — trimmed with `${VAR%$'\n'}` before use.
-- Playlist `clips` arrays are deduplicated during inventory assembly (preserving order). Duplicate playitems referencing the same clip are collapsed so each clip encodes once and appears once in the tsMuxeR meta file.
-- **Main movie classification** prefers the largest long playlist by total size, not the longest by duration. Some discs have bogus playlists that repeat a short clip hundreds of times, producing a huge duration but tiny size; these are now classified as extras.
-- In zsh, `local` outside a function behaves like a regular assignment. The surgical rebuild block uses `local` at top-level — this is safe but non-idiomatic.
-- **Pass 2 encoding validation**: After pass 2, the script validates `.h264` output by checking for an Annex B start code (`\x00\x00\x00` or `\x00\x00\x01`) in the first bytes. Corrupt files (e.g. from VC-1 decode failures) are removed so they don't reach tsMuxeR.
-- `get_source_title` strips trailing slashes from source paths so `/.../BDMV/` returns the parent directory name (previously returned an empty title).
+- **bash only**: `README.md` still incorrectly says "Requires zsh"; the script was rewritten in bash. Use `bash -n bd_shrink.sh` for syntax checks, not `zsh -n`.
+- **`local` is only valid inside functions** in bash.
+- Use `read < file` for line-oriented metadata reads; the script reads metadata files with `read`/`while read` loops, not `$(< file)`.
+- `EXTRAS_CLIPS` and `MAIN_CLIPS` have trailing newlines from `while read` — trimmed with parameter expansion (`${VAR%$'\n'}`) before use.
+- Playlist `clips` arrays are deduplicated during inventory assembly (preserving order).
+- **Pass 2 validation**: after encoding, `.h264` output is checked for Annex B start code; corrupt files are removed so they don't reach `tsMuxeR`.
+- SRT subtitles are extracted but skipped in the tsMuxeR meta (tsMuxeR 2.7.0 on Linux lacks font rendering). PGS subtitles pass through. DVD/VobSub subtitles are filtered out.
+- Movie-only mode allocates all space to video; audio + subtitle + container overhead can push total ~1–2% over target.
 
-### Known issues
+## Known issues
 
-- Some discs have corrupt H.264 in clips. The script gracefully skips these — the BD output will lack video for the affected clips, but won't fail.
-- Movie-only mode allocates ALL space to video. Audio + subtitle + tsMuxeR container overhead can push the total slightly above target (~1-2% over, still valid).
-
-## Next steps
-
-### Burn-to-disk (`--burn`) — IMPLEMENTED
-
-Burns output BDMV folder directly to BD-R. Two modes:
-
-- **`--burn` alone**: Pipes `genisoimage -udf` directly into `growisofs` — **no temp ISO created**. This avoids duplicating the ~22GB output.
-- **`--burn --iso`**: Creates an ISO file with `genisoimage -udf` first (for archival), then burns from the ISO.
-
-Both modes produce UDF-formatted discs (via `genisoimage -udf -allow-limited-size`). The `-allow-limited-size` flag is required because M2TS files on BD often exceed 4GiB. Only `BDMV/` and `CERTIFICATE/` are included in the ISO/disc (via `--graft-points` for genisoimage/mkisofs, `-map` for xorriso); the `.work` directory is never included.
-
-Key details:
-- `genisoimage` and `growisofs` are required for `--burn` (direct pipe mode)
-- `growisofs` (from `dvd+rw-tools`) provides UDF bridge for BD player compatibility
-- `MKISOFS=genisoimage` is set so `growisofs` uses the working UDF-capable mkisofs rather than xorriso's stub
-- Without `growisofs`, falls back to `xorriso -as cdrecord` for ISO file mode only (no UDF)
-- `--burn-device /dev/sr0` specifies the optical drive; auto-detected if omitted
-- No MD5 verification (genisoimage lacks `-md5` support; growisofs handles burn verification internally for BD-R)
-- ISO filenames use the source title (e.g., `The_Himalayan_1976.iso`) rather than a hidden `.iso` file
-- `mkdir -p "$DST/CERTIFICATE"` runs unconditionally before ISO/burn phases to guarantee the directory exists regardless of output mode
-
-### Menu preservation (surgical mode) — IMPLEMENTED
-
-Surgical mode reads `PlayList_type` from the MPLS binary's `AppInfoPlayList` struct. Playlists with `PlayList_type == 1` (menu/interactive) are forced into the menu category regardless of duration. Their clips are excluded from re-encoding in the budget phase (`extras_clips -= menu_clips`), preserving IGS (Interactive Graphics) button overlays.
+- BD-J discs with Java code that depends on specific CLPI metadata (timestamps, PIDs) of re-encoded clips may malfunction. Most BD-J menus only play playlists, so surgical mode works for the majority of discs. If a BD-J disc fails, `--movie-only` is the fallback.
+- Some discs have corrupt H.264 in source clips. The script skips these gracefully; the output will lack video for affected clips but won't fail.

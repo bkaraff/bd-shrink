@@ -1,12 +1,8 @@
-#!/usr/bin/env zsh
+#!/usr/bin/env bash
 set -euo pipefail
-# Make word splitting on unquoted $var behave like bash (split on IFS)
-setopt SH_WORD_SPLIT
-# Don't error when a glob matches nothing (like bash shopt -s nullglob)
-setopt NULL_GLOB
+shopt -s nullglob
 
-VERSION="0.1.0"
-SCRIPT_DIR="$(cd "$(dirname "${0}")" && pwd)"
+VERSION="0.2.0"
 
 # ─── defaults ────────────────────────────────────────────────────────────────
 TARGET_GB=23
@@ -25,6 +21,9 @@ USE_TUI=false
 INSTALL_DEPS=false
 BURN=false
 BURN_DEVICE=""
+CLEAN_WORK=false
+CODEC="h264"
+NICE=0
 
 # Default output directory when -o is omitted
 MOVIES_DIR="${HOME}/Movies"
@@ -89,7 +88,11 @@ trap 'echo "FATAL: line $LINENO exit $?" >&2' ERR
 # The command runs as a transient systemd service, NOT as a child of bash.
 # Even if the shell crashes, the service continues to completion.
 run_ff() {
-    systemd-run --user --wait -q -u "bd_ff.${RANDOM}.$$" --setenv=PATH=/usr/local/bin:/usr/bin:/bin -- "$@"
+    local nice_prop=()
+    if [[ "${NICE:-0}" -gt 0 ]]; then
+        nice_prop=(--property=Nice="$NICE")
+    fi
+    systemd-run --user --wait -q -u "bd_ff.${RANDOM}.$$" --setenv=PATH=/usr/local/bin:/usr/bin:/bin "${nice_prop[@]}" -- "$@"
 }
 
 usage() {
@@ -102,7 +105,7 @@ When source/output are omitted and gum is available, an interactive TUI
 is launched automatically. Pass --tui to force TUI mode even with args.
 
 Required:
-  -s, --source DIR|FILE   Source BDMV folder (must contain index.bdmv) or .mkv file
+  -s, --source DIR|FILE   Source BDMV folder (must contain index.bdmv) or video file (.mkv/.mp4/.m4v)
   -o, --output DIR       Output directory (must not exist unless -f)
 
 Options:
@@ -124,6 +127,9 @@ Options:
       --install-deps     Show required tools and install commands, then exit
       --burn              Burn output to BD-R after validation
       --burn-device DEV   Optical drive device path (auto-detected if omitted)
+      --clean-work        Remove working directory on success
+      --codec CODEC       Video codec: h264 or hevc (default: h264)
+      --nice [N]          Run encoder/rebuild at low CPU priority (default N=19)
   -h, --help             Show this help
 EOF
     exit 1
@@ -153,17 +159,29 @@ run_tui() {
             # Retry until a valid source is selected
             while true; do
                 local selected=""
+
+                # Quick-pick filter only if SOURCE_ROOT has recognizable movie folders/files
                 if [[ -n "$SOURCE_ROOT" ]] && [[ -d "$SOURCE_ROOT" ]]; then
-                    gum style --foreground "#7f849c" "Looking in: ${SOURCE_ROOT}"
-                    local dirs=("$SOURCE_ROOT"/*(/N) "$SOURCE_ROOT"/*.mkv(N) "$SOURCE_ROOT"/*.m2ts(N) "$SOURCE_ROOT"/*.ts(N) "$SOURCE_ROOT"/*.iso(N))
-                    if [[ ${#dirs[@]} -gt 0 ]]; then
-                        typeset -a names
-                        for d in "${dirs[@]}"; do names+=("${d##*/}"); done
-                        local choice=$(print -l "${(@)names}" \
-                            | gum filter --header="SELECT SOURCE" --placeholder "Search sources (esc = browse file system)..." || true)
-                        if [[ -n "$choice" ]]; then
-                            selected="$SOURCE_ROOT/$choice"
+                    declare -a candidates=()
+                    for d in "$SOURCE_ROOT"/*/; do
+                        [[ -d "$d" ]] || continue
+                        d="${d%/}"
+                        local base="${d##*/}"
+                        if [[ -f "$d/index.bdmv" ]] || [[ -f "$d/BDMV/index.bdmv" ]]; then
+                            candidates+=("$base")
+                        elif ls "$d"/*.mkv "$d"/*.mp4 "$d"/*.m4v "$d"/*.m2ts "$d"/*.ts "$d"/*.iso &>/dev/null; then
+                            candidates+=("$base")
                         fi
+                    done
+                    for f in "$SOURCE_ROOT"/*.mkv "$SOURCE_ROOT"/*.mp4 "$SOURCE_ROOT"/*.m4v "$SOURCE_ROOT"/*.m2ts "$SOURCE_ROOT"/*.ts "$SOURCE_ROOT"/*.iso; do
+                        [[ -f "$f" ]] && candidates+=("${f##*/}")
+                    done
+
+                    if [[ ${#candidates[@]} -gt 0 ]]; then
+                        gum style --foreground "#7f849c" "Looking in: ${SOURCE_ROOT}"
+                        local choice=$(printf '%s\n' "${candidates[@]}" \
+                            | gum filter --header="SELECT SOURCE" --placeholder "Search sources (esc = browse file system)..." || true)
+                        [[ -n "$choice" ]] && selected="$SOURCE_ROOT/$choice"
                     fi
                 fi
 
@@ -180,28 +198,28 @@ run_tui() {
                 local movie_folder=""
                 if [[ -f "$selected/index.bdmv" ]]; then
                     SOURCE="$selected"
-                    movie_folder="${selected:h}"
+                    movie_folder="$(dirname "$selected")"
                 elif [[ -f "$selected/BDMV/index.bdmv" ]]; then
                     SOURCE="$selected/BDMV"
                     movie_folder="$selected"
                 elif [[ -f "$selected" ]]; then
                     SOURCE="$selected"
-                    movie_folder="${selected:h}"
+                    movie_folder="$(dirname "$selected")"
                     MOVIE_ONLY=true
                 else
-                    typeset -a found_bdmv
-                    found_bdmv=("$selected"/*/BDMV(N))
-                    if [[ -n "${found_bdmv[1]:-}" ]] && [[ -f "${found_bdmv[1]}/index.bdmv" ]]; then
-                        SOURCE="${found_bdmv[1]}"
-                        movie_folder="${found_bdmv[1]:h}"
+                    declare -a found_bdmv
+                    found_bdmv=("$selected"/*/BDMV)
+                    if [[ -n "${found_bdmv[0]:-}" ]] && [[ -f "${found_bdmv[0]}/index.bdmv" ]]; then
+                        SOURCE="${found_bdmv[0]}"
+                        movie_folder="$(dirname "${found_bdmv[0]}")"
                     fi
                 fi
 
                 # If no BDMV, look for a video/ISO file directly inside the selected folder.
                 if [[ -z "$SOURCE" ]]; then
-                    local videos=("$selected"/*.mkv(N) "$selected"/*.m2ts(N) "$selected"/*.ts(N) "$selected"/*.iso(N))
-                    if [[ -n "${videos[1]:-}" ]]; then
-                        SOURCE="${videos[1]}"
+                    local videos=("$selected"/*.mkv "$selected"/*.mp4 "$selected"/*.m4v "$selected"/*.m2ts "$selected"/*.ts "$selected"/*.iso)
+                    if [[ -n "${videos[0]:-}" ]]; then
+                        SOURCE="${videos[0]}"
                         movie_folder="$selected"
                         MOVIE_ONLY=true
                     fi
@@ -211,14 +229,14 @@ run_tui() {
                     break  # valid source found
                 fi
 
-                warn "No BDMV folder or video file found under $selected"
-                warn "Select the folder CONTAINING BDMV/ or index.bdmv, not its parent."
-                SOURCE_ROOT="$selected"  # retry from the selected directory
+                warn "No BDMV or video file found directly under: $selected"
+                warn "Browse deeper and select the folder containing BDMV/ or a video file."
+                SOURCE_ROOT="$selected"  # next browser starts here
             done
 
             # Remember the parent of the movie folder as SOURCE_ROOT.
             if [[ -n "$movie_folder" ]]; then
-                SOURCE_ROOT="${movie_folder:h}"
+                SOURCE_ROOT="$(dirname "$movie_folder")"
                 mkdir -p "$CONFIG_DIR"
                 printf '%s\n' "$SOURCE_ROOT" > "$SOURCE_ROOT_FILE"
             fi
@@ -228,7 +246,25 @@ run_tui() {
         if [[ -z "$OUTPUT" ]]; then
             local source_title=$(get_source_title "$SOURCE")
             local default_out="${MOVIES_DIR}/${source_title}"
-            OUTPUT=$(gum input --placeholder "$default_out" --prompt "Output: ") || exit 1
+            local out_choice=$(printf '%s\n' \
+                    "Use default: $default_out" \
+                    "Browse for folder..." \
+                    "Type custom path..." \
+                | gum choose --limit=1 --height=3 --header="SELECT OUTPUT" || true)
+            case "$out_choice" in
+                *Browse*)
+                    local start_dir="$MOVIES_DIR"
+                    [[ -d "$start_dir" ]] || start_dir="${HOME}"
+                    OUTPUT=$(gum file --directory --cursor="▸ " "$start_dir" \
+                        --header="SELECT OUTPUT FOLDER — ↑↓ move, → enter dir, ← go up, enter select") || OUTPUT="$default_out"
+                    ;;
+                *Type*)
+                    OUTPUT=$(gum input --placeholder "$default_out" --prompt "Output: ") || OUTPUT="$default_out"
+                    ;;
+                *)
+                    OUTPUT="$default_out"
+                    ;;
+            esac
             [[ -z "$OUTPUT" ]] && OUTPUT="$default_out"
         fi
 
@@ -236,7 +272,7 @@ run_tui() {
         local mode_default="Full disc (keep menus, extras)"
         $MOVIE_ONLY && mode_default="Movie-only (no menus, fresh BD)"
 
-        local mode_choice=$(print -l \
+        local mode_choice=$(printf '%s\n' \
                 "Full disc (keep menus, extras)" \
                 "Movie-only (no menus, fresh BD)" \
             | gum choose --limit=1 --height=2 \
@@ -254,7 +290,7 @@ run_tui() {
         local iso_option_default="Folder (BDMV)"
         $OUTPUT_ISO && iso_option_default="ISO (.iso file)"
 
-        local iso_option_choice=$(print -l \
+        local iso_option_choice=$(printf '%s\n' \
                 "Folder (BDMV)" \
                 "ISO (.iso file)" \
             | gum choose --limit=1 --height=2 \
@@ -269,7 +305,7 @@ run_tui() {
         # ── Encoding options ──
         local preset_default="$MAIN_PRESET"
 
-        local preset_choice=$(print -l \
+        local preset_choice=$(printf '%s\n' \
                 "slow" "medium" "fast" "slower" "veryslow" \
             | gum choose --limit=1 --height=5 \
                 --header="ENCODING PRESET" --selected="$preset_default" || true)
@@ -285,10 +321,10 @@ run_tui() {
         fi
 
         if [[ ${#opt_labels[@]} -gt 0 ]]; then
-            local selected_str="${(j:,:)opt_selected}"
+            local selected_str=$(IFS=,; echo "${opt_selected[*]}")
             local choose_flags=(--no-limit --height=${#opt_labels[@]} --header="SELECT OPTIONS")
             [[ -n "$selected_str" ]] && choose_flags+=(--selected="$selected_str")
-            local chosen=$(print -l "${(@)opt_labels}" \
+            local chosen=$(printf '%s\n' "${opt_labels[@]}" \
                 | gum choose "${choose_flags[@]}" || true)
 
             if [[ -n "$chosen" ]]; then
@@ -463,7 +499,7 @@ show_install_deps() {
 
 check_deps() {
     local missing=()
-    for cmd in run_ff ffmpeg ffprobe tsMuxeR bc python3; do
+    for cmd in ffmpeg ffprobe tsMuxeR bc python3; do
         command -v "$cmd" &>/dev/null || missing+=("$cmd")
     done
     if [[ ${#missing[@]} -gt 0 ]]; then
@@ -506,8 +542,10 @@ burn_output() {
             die "No ISO file found for burning (expected: $ISO_OUT)"
         fi
         log "Burning ISO to $burn_dev..."
-        if command -v growisofs &>/dev/null; then
-            run_ff growisofs -dvd-compat -Z "${burn_dev}=${ISO_OUT}" || {
+        local growisofs_bin
+        growisofs_bin="$(command -v growisofs 2>/dev/null || true)"
+        if [[ -n "$growisofs_bin" ]]; then
+            run_ff "$growisofs_bin" -dvd-compat -Z "${burn_dev}=${ISO_OUT}" || {
                 die "Burn failed with growisofs"
             }
         else
@@ -519,15 +557,18 @@ burn_output() {
         fi
     else
         # Direct pipe: genisoimage -udf → growisofs, no temp ISO
-        if ! command -v growisofs &>/dev/null; then
+        local growisofs_bin genisoimage_bin
+        growisofs_bin="$(command -v growisofs 2>/dev/null || true)"
+        genisoimage_bin="$(command -v genisoimage 2>/dev/null || true)"
+        if [[ -z "$growisofs_bin" ]]; then
             die "growisofs is required for --burn (install: sudo dnf install dvd+rw-tools)"
         fi
-        if ! command -v genisoimage &>/dev/null; then
+        if [[ -z "$genisoimage_bin" ]]; then
             die "genisoimage is required for --burn (install: sudo dnf install genisoimage)"
         fi
         log "Piping to $burn_dev via growisofs (no temp ISO)..."
         # Only stream BDMV/CERTIFICATE to the drive, not .work or other siblings
-        MKISOFS=genisoimage run_ff growisofs -dvd-compat -Z "$burn_dev" -udf -allow-limited-size -V "BD_SHRINK" \
+        run_ff env MKISOFS="$genisoimage_bin" "$growisofs_bin" -dvd-compat -Z "$burn_dev" -udf -allow-limited-size -V "$ISO_LABEL" \
             -graft-points BDMV="$DST/BDMV" CERTIFICATE="$DST/CERTIFICATE" || {
             die "Burn failed with growisofs"
         }
@@ -567,10 +608,35 @@ while [[ $# -gt 0 ]]; do
         --install-deps)    INSTALL_DEPS=true; shift ;;
         --burn)            BURN=true; shift ;;
         --burn-device)     BURN_DEVICE="$2"; shift 2 ;;
+        --clean-work)      CLEAN_WORK=true; shift ;;
+        --codec)           CODEC="$2"; shift 2 ;;
+        --nice)
+            if [[ -n "${2:-}" && ! "$2" =~ ^- ]]; then
+                NICE="$2"; shift 2
+            else
+                NICE=19; shift
+            fi
+            ;;
         -h|--help)         usage ;;
         *)                 die "Unknown option: $1" ;;
     esac
 done
+
+# Validate codec
+[[ "$CODEC" =~ ^(h264|hevc)$ ]] || die "Invalid --codec $CODEC — use h264 or hevc"
+
+# Validate nice value
+[[ "$NICE" =~ ^[0-9]+$ ]] || die "Invalid --nice value $NICE — must be a non-negative integer"
+[[ "$NICE" -le 19 ]] || die "Invalid --nice value $NICE — must be 0-19"
+
+# Derive codec-specific variables
+if [[ "$CODEC" == "hevc" ]]; then
+    VIDEO_EXT="hevc"
+    MUX_VIDEO_TYPE="V_MPEGH/ISO/HEVC"
+else
+    VIDEO_EXT="h264"
+    MUX_VIDEO_TYPE="V_MPEG4/ISO/AVC"
+fi
 
 # --install-deps: show dependency info and exit (no source/output required)
 if $INSTALL_DEPS; then
@@ -586,7 +652,7 @@ fi
 
 # Auto-derive output path from source if not provided
 if [[ -z "$OUTPUT" ]]; then
-    local source_title=$(get_source_title "$SOURCE")
+    source_title=$(get_source_title "$SOURCE")
     OUTPUT="${MOVIES_DIR}/${source_title}"
     log "Output not specified — defaulting to ${OUTPUT}"
 fi
@@ -599,11 +665,39 @@ fi
 [[ -z "$SOURCE" ]] && die "Source folder required (-s)"
 
 MKV_INPUT=false
-if [[ -f "$SOURCE" ]] && [[ "$SOURCE" == *.mkv ]]; then
+if [[ -f "$SOURCE" ]] && [[ "${SOURCE,,}" =~ \.(mkv|mp4|m4v)$ ]]; then
     MKV_INPUT=true
     MOVIE_ONLY=true
-elif [[ -f "$SOURCE" ]]; then
-    die "Source must be a BDMV folder (with index.bdmv) or a .mkv file"
+fi
+
+# Auto-detect BDMV inside a parent directory, or video file inside a directory
+if [[ -d "$SOURCE" ]] && [[ ! -f "$SOURCE/index.bdmv" ]] && ! $MKV_INPUT; then
+    if [[ -f "$SOURCE/BDMV/index.bdmv" ]]; then
+        SOURCE="$SOURCE/BDMV"
+        log "Auto-detected BDMV at: $SOURCE"
+    else
+        detected=false
+        for bdmv_candidate in "$SOURCE"/*/BDMV/index.bdmv; do
+            [[ -f "$bdmv_candidate" ]] || continue
+            SOURCE="${bdmv_candidate%/index.bdmv}"
+            log "Auto-detected BDMV at: $SOURCE"
+            detected=true
+            break
+        done
+        if ! $detected; then
+            for vid in "$SOURCE"/*.mkv "$SOURCE"/*.mp4 "$SOURCE"/*.m4v; do
+                [[ -f "$vid" ]] || continue
+                SOURCE="$vid"
+                MKV_INPUT=true
+                log "Auto-detected video file: $SOURCE"
+                break
+            done
+        fi
+    fi
+fi
+
+if [[ ! -d "$SOURCE" ]] && ! $MKV_INPUT; then
+    die "Source must be a BDMV folder (with index.bdmv) or video file (.mkv/.mp4/.m4v)"
 fi
 
 if ! $MKV_INPUT; then
@@ -616,8 +710,8 @@ fi
 # create/use a source-named subdirectory so the actual output is self-contained
 # and the work directory remains a sibling in the output root.
 if [[ -d "$OUTPUT" ]] && [[ ! -d "$OUTPUT/BDMV" ]]; then
-    local source_title=$(get_source_title "$SOURCE")
-    local output_candidate="${OUTPUT%/}/${source_title}"
+    source_title=$(get_source_title "$SOURCE")
+    output_candidate="${OUTPUT%/}/${source_title}"
     if [[ -d "$output_candidate" ]]; then
         OUTPUT="$output_candidate"
         log "Output directory is a parent folder — using existing ${OUTPUT}"
@@ -632,6 +726,8 @@ if [[ -d "$OUTPUT" ]] && ! $FORCE; then
     die "Output directory exists. Use -f to overwrite."
 fi
 
+check_deps
+
 if [[ -z "$WORK_DIR" ]]; then
     WORK_DIR="${OUTPUT}.work"
 fi
@@ -639,12 +735,12 @@ mkdir -p "$WORK_DIR"
 
 # Start logging to file while still printing to terminal
 mkdir -p "$LOG_DIR"
-exec > >(tee -a "$LOG_FILE") 2>&1
+exec > >(tee -a "$LOG_FILE" "$WORK_DIR/bd_shrink.log") 2>&1
 log "Logging to $LOG_FILE"
 
 # Detect BD-J
 HAS_BDJ=false
-if ! $MKV_INPUT && [[ -d "$SOURCE/BDJO" || -d "$SOURCE/JAR" ]]; then
+if ! $MOVIE_ONLY && ! $MKV_INPUT && [[ -d "$SOURCE/BDJO" || -d "$SOURCE/JAR" ]]; then
     HAS_BDJ=true
     warn "BD-J (Java) menus detected. Menu preservation may fail on this disc."
     warn "Proceeding anyway, but test the output carefully in a software player first."
@@ -687,10 +783,37 @@ def parse_mpls(path):
         })
         off += 2 + plen
 
-    # Skip subpaths to reach AppInfoPlayList
+    # Parse SubPaths: extract SubPlayItem clips, then advance to AppInfoPlayList.
+    # BDMV spec: SubPath length is a 4-byte uint (not 2-byte as previously coded).
+    # SubPath layout:
+    #   length(4) | type(1) | repeat(1) | reserved(2) | num_sub_playitems(2) | SubPlayItems...
+    # SubPlayItem layout:
+    #   length(2) | clip_id(5) | codec(4) | flags... | IN_time(4) | OUT_time(4) | ...
+    subpath_items = []
     for _ in range(num_subpaths):
-        splen = struct.unpack_from('>H', data, off)[0]
-        off += 2 + splen
+        splen = struct.unpack_from('>I', data, off)[0]
+        sub_end = off + 4 + splen
+        sub_off = off + 4
+        if sub_off + 6 <= sub_end and sub_off + 6 <= len(data):
+            num_spi = struct.unpack_from('>H', data, sub_off + 4)[0]
+            spi_off = sub_off + 6
+            for _ in range(num_spi):
+                if spi_off + 11 > sub_end or spi_off + 11 > len(data):
+                    break
+                spi_len = struct.unpack_from('>H', data, spi_off)[0]
+                clip = data[spi_off+2:spi_off+7].decode('ascii', errors='replace')
+                codec = data[spi_off+7:spi_off+11].decode('ascii', errors='replace')
+                subpath_items.append({
+                    'clip': clip,
+                    'codec': codec,
+                    'in_time': 0,
+                    'out_time': 0,
+                    'duration': 0,
+                })
+                spi_off += 2 + spi_len
+        off = sub_end
+
+    items.extend(subpath_items)
 
     # Read PlayList_type from AppInfoPlayList (1 = menu/interactive)
     playlist_type = 0
@@ -741,12 +864,12 @@ PYEOF
 INVENTORY_FILE="$WORK_DIR/inventory.json"
 
 if $MKV_INPUT; then
-    # MKV: create synthetic playlists.json with single clip "00000"
-    python3 -c "
-import json
-# Get MKV duration via ffprobe
-import subprocess
-r = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', '$SOURCE'], capture_output=True, text=True, timeout=30)
+    # Single-file video: create synthetic playlists.json with single clip "00000"
+    python3 - "$SOURCE" << 'PYEOF' > "$WORK_DIR/playlists.json"
+import json, subprocess, sys
+# Get single-file video duration via ffprobe
+source = sys.argv[1]
+r = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', source], capture_output=True, text=True, timeout=30)
 dur = float(r.stdout.strip()) if r.stdout.strip() else 0
 data = {
     '00000.mpls': {
@@ -758,17 +881,15 @@ data = {
     }
 }
 print(json.dumps(data, indent=2))
-" > "$WORK_DIR/playlists.json"
+PYEOF
 else
     parse_mpls "$SOURCE/PLAYLIST" > "$WORK_DIR/playlists.json"
 fi
 
 # Probe all unique clips
-declare -A PROBED_CLIPS
-
-all_clips=$(python3 -c "
-import json, sys
-with open('$WORK_DIR/playlists.json') as f:
+all_clips=$(python3 - "$WORK_DIR" << 'PYEOF'
+import json, os, sys
+with open(os.path.join(sys.argv[1], 'playlists.json'), encoding='utf-8') as f:
     data = json.load(f)
 clips = set()
 for pl in data.values():
@@ -776,7 +897,8 @@ for pl in data.values():
         clips.add(item['clip'])
 for c in sorted(clips):
     print(c)
-")
+PYEOF
+)
 
 log "Found $(echo "$all_clips" | wc -l) unique M2TS clips"
 
@@ -790,18 +912,20 @@ CLIPS_DIR="$WORK_DIR/clips"
 mkdir -p "$CLIPS_DIR"
 
 if $MKV_INPUT; then
-    # MKV: ffprobe the source file directly as clip "00000"
-    python3 -c "
-import json, subprocess
+    # Single-file video: ffprobe the source file directly as clip "00000"
+    python3 - "$SOURCE" "$CLIPS_DIR" << 'PYEOF'
+import json, os, subprocess, sys
+source = sys.argv[1]
+clips_dir = sys.argv[2]
 r = subprocess.run(['ffprobe', '-v', 'error',
     '-show_entries', 'stream=index,codec_type,codec_name,width,height,duration,r_frame_rate,channels,channel_layout,sample_rate,bit_rate',
     '-show_entries', 'format=size,duration,bit_rate',
-    '-of', 'json', '$SOURCE'],
+    '-of', 'json', source],
     capture_output=True, text=True, timeout=60)
 data = json.loads(r.stdout) if r.stdout else {'streams': [], 'format': {}}
-with open('$CLIPS_DIR/00000.json', 'w') as f:
+with open(os.path.join(clips_dir, '00000.json'), 'w', encoding='utf-8') as f:
     json.dump(data, f)
-"
+PYEOF
 else
     python3 - "$SOURCE" "$CLIPS_DIR" << 'PYEOF'
 import json, os, subprocess, sys
@@ -810,7 +934,7 @@ source = sys.argv[1]
 clips_dir = sys.argv[2]
 
 # Read playlists to get clip IDs
-playlists = json.load(open(os.path.join(os.path.dirname(clips_dir), 'playlists.json')))
+playlists = json.load(open(os.path.join(os.path.dirname(clips_dir), 'playlists.json'), encoding='utf-8'))
 all_clips = set()
 for pl in playlists.values():
     for item in pl['playitems']:
@@ -831,17 +955,18 @@ for clip in sorted(all_clips):
         data = json.loads(r.stdout) if r.stdout else {'streams': [], 'format': {}}
     except Exception:
         data = {'streams': [], 'format': {}}
-    with open(out_path, 'w') as f:
+    with open(out_path, 'w', encoding='utf-8') as f:
         json.dump(data, f)
 PYEOF
 fi
 
 # Build combined inventory
-python3 << PYEOF > "$INVENTORY_FILE"
+python3 - "$WORK_DIR" "$CLIPS_DIR" << 'PYEOF' > "$INVENTORY_FILE"
 import json, os, sys
 
-playlists = json.load(open('$WORK_DIR/playlists.json'))
-clips_dir = '$CLIPS_DIR'
+work_dir = sys.argv[1]
+playlists = json.load(open(os.path.join(work_dir, 'playlists.json'), encoding='utf-8'))
+clips_dir = sys.argv[2]
 
 # Summarize each unique clip
 clip_summaries = {}
@@ -851,7 +976,7 @@ for clip_name in os.listdir(clips_dir):
     clip_id = clip_name.replace('.json', '')
     path = os.path.join(clips_dir, clip_name)
     try:
-        data = json.load(open(path))
+        data = json.load(open(path, encoding='utf-8'))
     except:
         clip_summaries[clip_id] = {'error': 'failed to parse ffprobe output'}
         continue
@@ -944,17 +1069,17 @@ inventory['disc_size_mb'] = round(disc_size / 1048576, 1)
 json.dump(inventory, sys.stdout, indent=2)
 PYEOF
 
-log "Inventory complete: $(python3 -c "import json; d=json.load(open('$INVENTORY_FILE')); print(f\"{d['disc_size_gb']} GB, {len(d['clips'])} clips, {len(d['playlists'])} playlists\")")"
+log "Inventory complete: $(python3 -c 'import json,sys;d=json.load(open(sys.argv[1],encoding="utf-8"));print(f"{d["disc_size_gb"]} GB, {len(d["clips"])} clips, {len(d["playlists"])} playlists")' "$INVENTORY_FILE")"
 
 # ─── Phase 2: Classify ───────────────────────────────────────────────────────
 
 log "Phase 2: Classifying content..."
 
 CLASSIFY_FILE="$WORK_DIR/classify.json"
-python3 << PYEOF > "$CLASSIFY_FILE"
+python3 - "$INVENTORY_FILE" "$PY_KEEP_ONE" << 'PYEOF' > "$CLASSIFY_FILE"
 import json, sys
 
-inv = json.load(open('$INVENTORY_FILE'))
+inv = json.load(open(sys.argv[1],encoding="utf-8"))
 playlists = inv['playlists']
 clips = inv['clips']
 
@@ -1000,6 +1125,26 @@ for pl_name, pl_data in pl_sorted:
     else:
         # Short clips with video -> menu animations/transitions
         menu_pls.append(pl_name)
+
+# Second pass: catch menu-adjacent playlists.
+# Collect clips referenced by known menus, then scan extras for:
+#   - shared clips (e.g. menu background also used by a warning screen)
+#   - zero-chapter + short duration (logos, warnings, transitions)
+menu_clip_set = set()
+for pl_name in menu_pls:
+    for c in playlists.get(pl_name, {}).get('clips', []):
+        menu_clip_set.add(c)
+
+adjacent_extras = []
+for pl_name in extras_pls:
+    pl = playlists.get(pl_name, {})
+    if any(c in menu_clip_set for c in pl.get('clips', [])):
+        menu_pls.append(pl_name)
+    elif pl.get('chapters', 0) == 0 and pl.get('duration', 0) < 120:
+        menu_pls.append(pl_name)
+    else:
+        adjacent_extras.append(pl_name)
+extras_pls = adjacent_extras
 
 # Re-classify: the LARGEST long playlist(s) are the main movie.
 # Real movies have both long duration AND large size. Some discs contain
@@ -1051,10 +1196,7 @@ classification = {
 
 # Detailed per-playlist breakdown
 details = {}
-for pl_name in pl_sorted:
-    pl_data = pl_name[1] if isinstance(pl_name, tuple) else playlists[pl_name]
-    if isinstance(pl_name, tuple):
-        pl_name, pl_data = pl_name
+for pl_name, pl_data in pl_sorted:
     dur_str = f"{int(pl_data['duration']//60)}m{int(pl_data['duration']%60)}s"
     size_mb = pl_data.get('total_size_mb', 0)
     cat = 'main' if pl_name in main_movie_pls else ('extras' if pl_name in extras_pls else 'menu')
@@ -1069,7 +1211,7 @@ for pl_name in pl_sorted:
 
 classification['details'] = details
 
-if $PY_KEEP_ONE:
+if sys.argv[2] == 'True':
     classification['main_movie'] = main_movie_pls[:1]
     # Move the others to extras (they'll be skipped or encoded)
     for pl in main_movie_pls[1:]:
@@ -1079,33 +1221,68 @@ if $PY_KEEP_ONE:
 json.dump(classification, sys.stdout, indent=2)
 PYEOF
 
-MAIN_PLAYLISTS=($(python3 -c "import json; d=json.load(open('$CLASSIFY_FILE')); print(' '.join(d['main_movie']))"))
-EXTRAS_PLAYLISTS=($(python3 -c "import json; d=json.load(open('$CLASSIFY_FILE')); print(' '.join(d['extras']))"))
-MENU_PLAYLISTS=($(python3 -c "import json; d=json.load(open('$CLASSIFY_FILE')); print(' '.join(d['menus']))"))
+script_output=$(python3 - "$CLASSIFY_FILE" << 'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1], encoding='utf-8'))
+main_list = d.get('main_movie', [])
+print(' '.join(main_list))
+print(' '.join(d.get('extras', [])))
+print(' '.join(d.get('menus', [])))
+print(len(d.get('orphans', [])))
+for pl in main_list:
+    detail = d.get('details', {}).get(pl, {})
+    print(detail.get('duration_str', '?'))
+PYEOF
+) || die "Failed to parse classify data"
+
+mapfile -t lines <<< "$script_output"
+
+main_line="${lines[0]:-}"
+extras_line="${lines[1]:-}"
+menu_line="${lines[2]:-}"
+orphan_count="${lines[3]:-0}"
+dur_lines=("${lines[@]:4}")
+
+IFS=' ' read -ra MAIN_PLAYLISTS <<< "$main_line"
+IFS=' ' read -ra EXTRAS_PLAYLISTS <<< "$extras_line"
+IFS=' ' read -ra MENU_PLAYLISTS <<< "$menu_line"
 
 log "Main movie: ${#MAIN_PLAYLISTS[@]} playlist(s)"
+idx=0
 for pl in "${MAIN_PLAYLISTS[@]}"; do
-    info "$pl — $(python3 -c "import json; d=json.load(open('$CLASSIFY_FILE')); print(d['details']['$pl']['duration_str'])" 2>/dev/null || echo '?')"
+    dur="${dur_lines[$idx]:-?}"
+    info "$pl — $dur"
+    ((idx++)) || true
 done
 log "Extras: ${#EXTRAS_PLAYLISTS[@]} playlist(s)"
-log "Menus: ${#MENU_PLAYLISTS[@]} playlist(s) + $(python3 -c "import json; d=json.load(open('$CLASSIFY_FILE')); print(len(d['orphans']))") orphan clips"
+log "Menus: ${#MENU_PLAYLISTS[@]} playlist(s) + ${orphan_count} orphan clips"
 
 # ─── Phase 3: Budget ─────────────────────────────────────────────────────────
 
 log "Phase 3: Calculating space budget..."
 
 BUDGET_FILE="$WORK_DIR/budget.json"
-python3 << PYEOF > "$BUDGET_FILE"
+python3 - "$INVENTORY_FILE" "$CLASSIFY_FILE" "$TARGET_GB" "$OVERHEAD_MB" "$EXTRAS_SCALE" "$PY_MOVIE_ONLY" "$PY_NO_EXTRAS" "$EXTRAS_AUDIO_BITRATE" "$MAIN_AUDIO_BITRATE" "$COMMENTARY_AUDIO_BITRATE" << 'PYEOF' > "$BUDGET_FILE"
 import json, sys
 
-inv = json.load(open('$INVENTORY_FILE'))
-clf = json.load(open('$CLASSIFY_FILE'))
+inventory_file = sys.argv[1]
+classify_file = sys.argv[2]
+target_gb = int(sys.argv[3])
+overhead_mb = int(sys.argv[4])
+extras_scale = sys.argv[5]
+py_movie_only = sys.argv[6] == 'True'
+py_no_extras = sys.argv[7] == 'True'
+extras_audio_bitrate_str = sys.argv[8]
+main_audio_bitrate_str = sys.argv[9]
+commentary_audio_bitrate_str = sys.argv[10]
+
+inv = json.load(open(inventory_file, encoding='utf-8'))
+clf = json.load(open(classify_file, encoding='utf-8'))
 clips = inv['clips']
 
-target_bytes = $TARGET_GB * 1073741824
-overhead_bytes = $OVERHEAD_MB * 1048576
+target_bytes = target_gb * 1073741824
+overhead_bytes = overhead_mb * 1048576
 target_available = target_bytes - overhead_bytes
-extras_scale = "$EXTRAS_SCALE"
 
 main_pls = clf['main_movie']
 extras_pls = clf['extras']
@@ -1152,7 +1329,7 @@ for c in extras_clips:
             is_hd = True
             resolution = f"{w}x{h}"
 
-    audio_bitrate = int('$EXTRAS_AUDIO_BITRATE'.replace('k', '')) * 1000
+    audio_bitrate = int(extras_audio_bitrate_str.replace('k', '')) * 1000
     num_audio = len(cs.get('audio', []))
     total_audio_bitrate = audio_bitrate * max(1, num_audio)  # all audio tracks at same bitrate
 
@@ -1173,8 +1350,13 @@ for c in extras_clips:
         'will_reencode': is_hd and dur > 0,
     }
 
+if py_no_extras:
+    extras_reencoded_size = 0
+    extras_original_size = 0
+    extras_clip_details = {}
+
 # Available for main movie
-if $PY_MOVIE_ONLY:
+if py_movie_only:
     # Movie-only: all space goes to main movie
     available_for_main = target_available
 else:
@@ -1184,20 +1366,22 @@ else:
 total_main_dur = 0
 for pl_name in main_pls:
     total_main_dur += clf['details'][pl_name]['duration']
-    if $PY_MOVIE_ONLY:
+    if py_movie_only:
         break  # movie-only only encodes the first playlist
 
 main_audio_size = 0
 main_audio_tracks = 0
 if total_main_dur > 0:
-    # Audio overhead: extraction always attempts 8 tracks
-    # (matching seq 0 7 in Phase 4), 1 at MAIN, 7 at COMMENTARY bitrate
-    for i in range(8):
+    # Use actual audio track count from the first main clip, capped at 8
+    first_cid = next(iter(main_clips)) if main_clips else None
+    first_clip = inv['clips'].get(first_cid, {}) if first_cid else {}
+    main_audio_count = min(8, max(1, len(first_clip.get('audio', []))))
+    for i in range(main_audio_count):
         if i == 0:
-            rate = int('$MAIN_AUDIO_BITRATE'.replace('k', '')) * 1000
+            rate = int(main_audio_bitrate_str.replace('k', '')) * 1000
         else:
             main_audio_tracks += 1
-            rate = int('$COMMENTARY_AUDIO_BITRATE'.replace('k', '')) * 1000
+            rate = int(commentary_audio_bitrate_str.replace('k', '')) * 1000
         main_audio_size += int((rate * total_main_dur) / 8)
 
 main_bitrate = 0
@@ -1207,9 +1391,9 @@ if total_main_dur > 0:
     main_bitrate = max(1000000, int((main_video_available * 8) / total_main_dur))
 
 budget = {
-    'target_gb': $TARGET_GB,
+    'target_gb': target_gb,
     'target_bytes': target_bytes,
-    'overhead_mb': $OVERHEAD_MB,
+    'overhead_mb': overhead_mb,
     'available_bytes': int(available_for_main),
     'menu_size_mb': round(total_menu_size / 1048576, 1),
     'extras_original_mb': round(extras_original_size / 1048576, 1),
@@ -1220,9 +1404,9 @@ budget = {
     'main_bitrate_mbps': round(main_bitrate / 1000000, 2),
     'main_duration_sec': total_main_dur,
     'main_duration_str': f"{int(total_main_dur//3600)}h{int((total_main_dur%3600)//60)}m",
-    'main_audio_tracks': main_audio_tracks + 1,
+    'main_audio_tracks': main_audio_count,
     'commentary_tracks': main_audio_tracks,
-    'commentary_bitrate': int('$COMMENTARY_AUDIO_BITRATE'.replace('k', '')),
+    'commentary_bitrate': int(commentary_audio_bitrate_str.replace('k', '')),
     'extras_details': extras_clip_details,
 }
 
@@ -1230,18 +1414,18 @@ json.dump(budget, sys.stdout, indent=2)
 PYEOF
 
 log "Budget summary:"
-python3 -c "
-import json
-b = json.load(open('$BUDGET_FILE'))
-print(f\"  Target:            {b['target_gb']} GB\")
-print(f\"  Menu (passthru):   {b['menu_size_mb']} MB\")
-print(f\"  Extras original:   {b['extras_original_mb']} MB\")
-print(f\"  Extras estimated:  {b['extras_estimated_mb']} MB\")
-print(f\"  Main original:     {b['main_original_mb']} MB\")
-print(f\"  Main available:    {b['main_available_mb']} MB\")
-print(f\"  Main bitrate:      {b['main_bitrate_mbps']} Mbps\")
-print(f\"  Main duration:     {b['main_duration_str']}\")
-" 2>/dev/null
+python3 - "$BUDGET_FILE" << 'PYEOF' 2>/dev/null
+import json, sys
+b = json.load(open(sys.argv[1],encoding="utf-8"))
+print(f"  Target:            {b['target_gb']} GB")
+print(f"  Menu (passthru):   {b['menu_size_mb']} MB")
+print(f"  Extras original:   {b['extras_original_mb']} MB")
+print(f"  Extras estimated:  {b['extras_estimated_mb']} MB")
+print(f"  Main original:     {b['main_original_mb']} MB")
+print(f"  Main available:    {b['main_available_mb']} MB")
+print(f"  Main bitrate:      {b['main_bitrate_mbps']} Mbps")
+print(f"  Main duration:     {b['main_duration_str']}")
+PYEOF
 
 if $DRY_RUN; then
     log "Dry run complete. Summary above."
@@ -1256,17 +1440,24 @@ log "Phase 4: Encoding..."
 ENCODE_DIR="$WORK_DIR/encode"
 mkdir -p "$ENCODE_DIR"
 
-# Pre-compute ALL data for Phase 4 + Phase 5 in a single systemd-run call (no shell child processes)
-systemd-run --user --wait -q -u "bd_pre.${RANDOM}.$$" -- python3 -c "
-import json, os
+# Pre-compute ALL data for Phase 4 + Phase 5 in a single systemd-run call
+PRECOMPUTE_PY="$WORK_DIR/precompute.py"
+cat > "$PRECOMPUTE_PY" << 'PYEOF'
+import json, os, sys
 
-data = json.load(open('$INVENTORY_FILE'))
-budget = json.load(open('$BUDGET_FILE'))
-classify = json.load(open('$CLASSIFY_FILE'))
+inventory_file = sys.argv[1]
+budget_file = sys.argv[2]
+classify_file = sys.argv[3]
+work_dir = sys.argv[4]
+clips_dir = sys.argv[5]
+
+data = json.load(open(inventory_file, encoding='utf-8'))
+budget = json.load(open(budget_file, encoding='utf-8'))
+classify = json.load(open(classify_file, encoding='utf-8'))
 base = int(budget['main_bitrate'])
 
 # --- Phase 4: clip metadata ---
-with open('$WORK_DIR/.clip_precompute.txt', 'w') as f:
+with open(os.path.join(work_dir, '.clip_precompute.txt'), 'w', encoding='utf-8') as f:
     for cid, c in data.get('clips', {}).items():
         aud = len(c.get('audio', []))
         sub = len(c.get('subtitles', []))
@@ -1276,11 +1467,14 @@ with open('$WORK_DIR/.clip_precompute.txt', 'w') as f:
         f.write(f'{cid}|{aud}|{sub}|{h}|{w}\n')
 
 # --- Phase 4: budget values ---
-with open('$WORK_DIR/.budget_values.txt', 'w') as f:
-    f.write(f'{base}\n{int(base * 1.1)}\n{int(base * 1.5)}\n')
+with open(os.path.join(work_dir, '.budget_values.txt'), 'w', encoding='utf-8') as f:
+    # Cap maxrate/bufsize at BD-compatible peaks to avoid encoder rejects on tiny sources
+    maxrate = min(int(base * 1.1), 40000000)
+    bufsize = min(int(base * 1.5), 30000000)
+    f.write(f'{base}\n{maxrate}\n{bufsize}\n')
 
 # --- Phase 4: extras clips ---
-with open('$WORK_DIR/.extras_clips.txt', 'w') as f:
+with open(os.path.join(work_dir, '.extras_clips.txt'), 'w', encoding='utf-8') as f:
     for cid, cd in budget['extras_details'].items():
         if cd['will_reencode']:
             f.write(f'{cid}\n')
@@ -1289,16 +1483,17 @@ with open('$WORK_DIR/.extras_clips.txt', 'w') as f:
 main_clips = []
 for pl_name in classify['main_movie']:
     pd = classify['details'].get(pl_name, {})
-    main_clips = pd.get('clips', [])
-    break  # first main playlist
+    for c in pd.get('clips', []):
+        if c not in main_clips:
+            main_clips.append(c)
 
-with open('$WORK_DIR/.main_clips.txt', 'w') as f:
+with open(os.path.join(work_dir, '.main_clips.txt'), 'w', encoding='utf-8') as f:
     for cid in main_clips:
         f.write(f'{cid}\n')
 
 # --- Phase 5: main playlist name ---
 main_pl_name = classify['main_movie'][0] if classify['main_movie'] else ''
-with open('$WORK_DIR/.main_playlist.txt', 'w') as f:
+with open(os.path.join(work_dir, '.main_playlist.txt'), 'w', encoding='utf-8') as f:
     f.write(f'{main_pl_name}\n')
 
 # --- Phase 5: chapter timestamps ---
@@ -1312,16 +1507,16 @@ for t in ct:
     if t not in seen:
         chapters.append(ch)
         seen.add(t)
-with open('$WORK_DIR/.main_chapters.txt', 'w') as f:
+with open(os.path.join(work_dir, '.main_chapters.txt'), 'w', encoding='utf-8') as f:
     f.write(';'.join(chapters) + '\n')
 
 # --- Phase 5: FPS of all clips (surgical mode needs per-clip FPS) ---
-with open('$WORK_DIR/.clip_fps.txt', 'w') as f:
+with open(os.path.join(work_dir, '.clip_fps.txt'), 'w', encoding='utf-8') as f:
     for cid in data.get('clips', {}):
         fps = '24000/1001'
-        clip_json = os.path.join('$CLIPS_DIR', f'{cid}.json')
+        clip_json = os.path.join(clips_dir, f'{cid}.json')
         try:
-            d = json.load(open(clip_json))
+            d = json.load(open(clip_json, encoding='utf-8'))
             for s in d.get('streams', []):
                 if s.get('codec_type') == 'video':
                     fps = s.get('r_frame_rate', '24000/1001')
@@ -1334,37 +1529,35 @@ with open('$WORK_DIR/.clip_fps.txt', 'w') as f:
 main_fps = '24000/1001'
 if main_clips:
     first_cid = main_clips[0]
-    clip_json = os.path.join('$CLIPS_DIR', f'{first_cid}.json')
+    clip_json = os.path.join(clips_dir, f'{first_cid}.json')
     try:
-        d = json.load(open(clip_json))
+        d = json.load(open(clip_json, encoding='utf-8'))
         for s in d.get('streams', []):
             if s.get('codec_type') == 'video':
                 main_fps = s.get('r_frame_rate', '24000/1001')
                 break
     except:
         pass
-with open('$WORK_DIR/.main_fps.txt', 'w') as f:
+with open(os.path.join(work_dir, '.main_fps.txt'), 'w', encoding='utf-8') as f:
     f.write(f'{main_fps}\n')
 
 # --- Phase 5: all clip IDs (surgical mode needs the full list) ---
-with open('$WORK_DIR/.all_clips.txt', 'w') as f:
+with open(os.path.join(work_dir, '.all_clips.txt'), 'w', encoding='utf-8') as f:
     for cid in sorted(data.get('clips', {}).keys()):
         f.write(f'{cid}\n')
 
 # --- Phase 5: main clip count, max audio, max subtitle ---
-with open('$WORK_DIR/.main_counts.txt', 'w') as f:
+with open(os.path.join(work_dir, '.main_counts.txt'), 'w', encoding='utf-8') as f:
     f.write(f'{len(main_clips)}\n')
     f.write('0\n0\n')  # placeholder, recalculated in Phase 5 after encoding
-"
+PYEOF
 
-# Read clip metadata into associative arrays (builtins only, no child processes)
-declare -A CLIP_AUD CLIP_SUB CLIP_HEIGHT CLIP_WIDTH
-while IFS='|' read -r cid aud sub h w; do
-    CLIP_AUD[$cid]=$aud
-    CLIP_SUB[$cid]=$sub
-    CLIP_HEIGHT[$cid]=$h
-    CLIP_WIDTH[$cid]=$w
-done < "$WORK_DIR/.clip_precompute.txt"
+pre_nice_prop=()
+if [[ "${NICE:-0}" -gt 0 ]]; then
+    pre_nice_prop=(--property=Nice="$NICE")
+fi
+systemd-run --user --wait -q -u "bd_pre.${RANDOM}.$$" "${pre_nice_prop[@]}" -- python3 "$PRECOMPUTE_PY" "$INVENTORY_FILE" "$BUDGET_FILE" "$CLASSIFY_FILE" "$WORK_DIR" "$CLIPS_DIR"
+rm -f "$PRECOMPUTE_PY"
 
 # Read budget values (builtins only)
 {
@@ -1417,31 +1610,42 @@ if [[ -n "$MAIN_CLIPS" ]]; then
 fi
 
 # Run ALL encoding in a single Python process.
-# Single child process instead of dozens — drastically reduces SIGCHLD crash risk.
-python3 -u << PYEOF
-import json, os, subprocess, sys
+python3 -u - "$SOURCE" "$MKV_INPUT" "$ENCODE_DIR" "$WORK_DIR" "$CLIPS_DIR" "$INVENTORY_FILE" "$BD_X264_OPTS" "$MAIN_PRESET" "$MAIN_BITRATE" "$MAIN_MAXRATE" "$MAIN_BUFSIZE" "$MAIN_AUDIO_BITRATE" "$COMMENTARY_AUDIO_BITRATE" "$EXTRAS_AUDIO_BITRATE" "$EXTRAS_CRF" "$EXTRAS_SCALE" "$EXTRAS_CLIPS" "$MAIN_CLIPS" "$NO_EXTRAS" "$MOVIE_ONLY" "$CODEC" "$NICE" << 'PYEOF'
+import glob, json, os, subprocess, sys
 
-src_dir = '$SOURCE/STREAM'
-mkv_src = '$SOURCE'  # unused for BDMV input
-mkv_input = '$MKV_INPUT' == 'true'
-encode_dir = '$ENCODE_DIR'
-work_dir = '$WORK_DIR'
-clips_dir = '$CLIPS_DIR'
-inventory_file = '$INVENTORY_FILE'
-bd_x264_opts = '$BD_X264_OPTS'
-main_preset = '$MAIN_PRESET'
-main_bitrate = '$MAIN_BITRATE'
-main_maxrate = '$MAIN_MAXRATE'
-main_bufsize = '$MAIN_BUFSIZE'
-main_audio_bitrate = '$MAIN_AUDIO_BITRATE'
-commentary_audio_bitrate = '$COMMENTARY_AUDIO_BITRATE'
-extras_audio_bitrate = '$EXTRAS_AUDIO_BITRATE'
-extras_crf = '$EXTRAS_CRF'
-extras_scale = '$EXTRAS_SCALE'
-extras_clips_str = """$EXTRAS_CLIPS"""
-main_clips_str = """$MAIN_CLIPS"""
-no_extras = '$NO_EXTRAS' == 'true'
-movie_only = '$MOVIE_ONLY' == 'true'
+_source = sys.argv[1]
+src_dir = os.path.join(_source, 'STREAM')
+mkv_src = _source  # unused for BDMV input
+mkv_input = sys.argv[2] == 'true'
+encode_dir = sys.argv[3]
+work_dir = sys.argv[4]
+clips_dir = sys.argv[5]
+inventory_file = sys.argv[6]
+bd_x264_opts = sys.argv[7]
+main_preset = sys.argv[8]
+main_bitrate = sys.argv[9]
+main_maxrate = sys.argv[10]
+main_bufsize = sys.argv[11]
+main_audio_bitrate = sys.argv[12]
+commentary_audio_bitrate = sys.argv[13]
+extras_audio_bitrate = sys.argv[14]
+extras_crf = sys.argv[15]
+extras_scale = sys.argv[16]
+extras_clips_str = sys.argv[17]
+main_clips_str = sys.argv[18]
+no_extras = sys.argv[19] == 'true'
+movie_only = sys.argv[20] == 'true'
+codec = sys.argv[21]
+nice = int(sys.argv[22])
+enc_lib = 'libx265' if codec == 'hevc' else 'libx264'
+video_ext = 'hevc' if codec == 'hevc' else 'h264'
+pass_prefix = 'x265' if codec == 'hevc' else 'x264'
+is_hevc = codec == 'hevc'
+
+def apply_nice(cmd):
+    if nice > 0:
+        return ['nice', '-n', str(nice)] + cmd
+    return cmd
 
 def clip_source(clip):
     if mkv_input:
@@ -1454,7 +1658,7 @@ def get_sub_codecs(clip):
     if not os.path.isfile(cpath):
         return []
     try:
-        d = json.load(open(cpath))
+        d = json.load(open(cpath, encoding='utf-8'))
         subs = []
         for s in d.get('streams', []):
             if s.get('codec_type') == 'subtitle':
@@ -1469,7 +1673,7 @@ def get_audio_codecs(clip):
     if not os.path.isfile(cpath):
         return []
     try:
-        d = json.load(open(cpath))
+        d = json.load(open(cpath, encoding='utf-8'))
         codecs = []
         for s in d.get('streams', []):
             if s.get('codec_type') == 'audio':
@@ -1494,10 +1698,10 @@ def run_ff(cmd, out_file=None, pass_log_base=None):
     if out_file and os.path.isfile(out_file) and os.path.getsize(out_file) > 0:
         return True
     if pass_log_base:
-        import glob
         matches = glob.glob(pass_log_base + '*')
         if matches:
             return True
+    cmd = apply_nice(cmd)
     try:
         r = subprocess.run(cmd, timeout=None, capture_output=False)
         if r.returncode == 0:
@@ -1505,7 +1709,6 @@ def run_ff(cmd, out_file=None, pass_log_base=None):
         if out_file and os.path.isfile(out_file) and os.path.getsize(out_file) > 0:
             return True
         if pass_log_base:
-            import glob
             matches = glob.glob(pass_log_base + '*')
             if matches:
                 return True
@@ -1520,7 +1723,7 @@ main_clips = [c.strip() for c in main_clips_str.split('\n') if c.strip()]
 
 # Read pre-computed clip metadata
 clip_data = {}
-with open('{}/.clip_precompute.txt'.format(work_dir)) as f:
+with open('{}/.clip_precompute.txt'.format(work_dir), encoding='utf-8') as f:
     for line in f:
         line = line.strip()
         if not line: continue
@@ -1528,14 +1731,17 @@ with open('{}/.clip_precompute.txt'.format(work_dir)) as f:
         clip_data[parts[0]] = {'aud': int(parts[1]), 'sub': int(parts[2]), 'h': int(parts[3]), 'w': int(parts[4])}
 
 # --- Encode extras ---
+total_clips = len(extras_clips) + len(main_clips)
+clip_idx = 0
 if not no_extras and not movie_only:
     for i, clip in enumerate(extras_clips):
         src = clip_source(clip)
-        out_video = os.path.join(encode_dir, '{}_video.h264'.format(clip))
+        out_video = os.path.join(encode_dir, '{}_video.' + video_ext).format(clip)
         cd = clip_data.get(clip, {'aud':0, 'sub':0, 'h':1080})
         src_aud, src_sub, src_height = cd['aud'], cd['sub'], cd['h']
 
-        sys.stderr.write('  Extra: {}.m2ts\n'.format(clip))
+        clip_idx += 1
+        sys.stderr.write('  [{}/{}] Extra: {}.m2ts\n'.format(clip_idx, total_clips, clip))
 
         # Audio extraction
         audio_tracks = 0
@@ -1548,11 +1754,15 @@ if not no_extras and not movie_only:
                 if codec in ('mp3', 'mp3float', 'mp2', 'mp2float'):
                     sys.stderr.write('    skipping MPEG audio track {}\n'.format(ai))
                     continue
-                audio_args += ['-map', '0:a:{}'.format(ai), '-c:a', 'ac3',
-                               '-b:a', extras_audio_bitrate,
-                               os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, actual_audio_idx))]
+                out_path = os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, actual_audio_idx))
+                if codec in ('ac3', 'eac3'):
+                    audio_args += ['-map', '0:a:{}'.format(ai), '-c:a', 'copy', out_path]
+                else:
+                    audio_args += ['-map', '0:a:{}'.format(ai), '-c:a', 'ac3',
+                                   '-b:a', extras_audio_bitrate, out_path]
                 actual_audio_idx += 1
-            if actual_audio_idx > 0 and run_ff(audio_args):
+            first_audio = os.path.join(encode_dir, '{}_audio_0.ac3'.format(clip))
+            if actual_audio_idx > 0 and run_ff(audio_args, out_file=first_audio):
                 audio_tracks = actual_audio_idx
                 for ai in range(actual_audio_idx):
                     if not os.path.isfile(os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, ai))):
@@ -1591,10 +1801,13 @@ if not no_extras and not movie_only:
 
         x264_full_opts = '{}:vbv-maxrate=12000:vbv-bufsize=12000'.format(bd_x264_opts)
         for attempt in range(3):
-            cmd = ['ffmpeg', '-y', '-v', 'error', '-i', src,
-                   '-map', '0:v:0', '-c:v', 'libx264', '-preset', 'medium',
-                   '-crf', str(extras_crf)] + video_filter + [
-                   '-x264opts', x264_full_opts, out_video]
+            cmd = ['ffmpeg', '-y', '-v', 'error', '-stats', '-i', src,
+                   '-map', '0:v:0', '-c:v', enc_lib, '-preset', 'medium',
+                   '-crf', str(extras_crf)] + video_filter
+            if is_hevc:
+                cmd += ['-maxrate', '12000k', '-bufsize', '12000k', out_video]
+            else:
+                cmd += ['-x264opts', x264_full_opts, out_video]
             if run_ff(cmd, out_file=out_video):
                 break
             if attempt < 2:
@@ -1607,12 +1820,13 @@ if not no_extras and not movie_only:
 if main_clips:
     for clip in main_clips:
         src = clip_source(clip)
-        out_video = os.path.join(encode_dir, '{}_video.h264'.format(clip))
-        pass_log = os.path.join(work_dir, 'x264_{}.log'.format(clip))
+        out_video = os.path.join(encode_dir, '{}_video.' + video_ext).format(clip)
+        pass_log = os.path.join(work_dir, pass_prefix + '_{}.log'.format(clip))
         cd = clip_data.get(clip, {'aud':0, 'sub':0, 'h':1080})
         src_aud, src_sub = cd['aud'], cd['sub']
 
-        sys.stderr.write('  Main: {}.m2ts\n'.format(clip))
+        clip_idx += 1
+        sys.stderr.write('  [{}/{}] Main: {}.m2ts\n'.format(clip_idx, total_clips, clip))
 
         # Audio extraction
         audio_tracks = 0
@@ -1625,12 +1839,16 @@ if main_clips:
                 if codec in ('mp3', 'mp3float', 'mp2', 'mp2float'):
                     sys.stderr.write('    skipping MPEG audio track {}\n'.format(ai))
                     continue
-                bitrate = main_audio_bitrate if actual_audio_idx == 0 else commentary_audio_bitrate
-                audio_args += ['-map', '0:a:{}'.format(ai), '-c:a', 'ac3',
-                               '-b:a', bitrate,
-                               os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, actual_audio_idx))]
+                out_path = os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, actual_audio_idx))
+                if codec in ('ac3', 'eac3'):
+                    audio_args += ['-map', '0:a:{}'.format(ai), '-c:a', 'copy', out_path]
+                else:
+                    bitrate = main_audio_bitrate if actual_audio_idx == 0 else commentary_audio_bitrate
+                    audio_args += ['-map', '0:a:{}'.format(ai), '-c:a', 'ac3',
+                                   '-b:a', bitrate, out_path]
                 actual_audio_idx += 1
-            if actual_audio_idx > 0 and run_ff(audio_args):
+            first_audio = os.path.join(encode_dir, '{}_audio_0.ac3'.format(clip))
+            if actual_audio_idx > 0 and run_ff(audio_args, out_file=first_audio):
                 audio_tracks = actual_audio_idx
 
         # Subtitle extraction
@@ -1661,17 +1879,20 @@ if main_clips:
         # Pass 1
         pass_log_actual = pass_log + '-0.log'
         # Clean orphaned passlogs
-        import glob
         for f in glob.glob(pass_log + '*'):
             try: os.remove(f)
             except: pass
 
+        sys.stderr.write('    Pass 1/2...\n')
         for attempt in range(3):
-            cmd = ['ffmpeg', '-y', '-v', 'error', '-i', src,
-                   '-map', '0:v:0', '-c:v', 'libx264', '-preset', main_preset,
-                   '-b:v', main_bitrate, '-x264opts', bd_x264_opts,
-                   '-pass', '1', '-passlogfile', pass_log,
-                   '-an', '-f', 'null', '/dev/null']
+            cmd = ['ffmpeg', '-y', '-v', 'error', '-stats', '-i', src,
+                   '-map', '0:v:0', '-c:v', enc_lib, '-preset', main_preset,
+                   '-b:v', main_bitrate]
+            if not is_hevc:
+                cmd += ['-x264opts', bd_x264_opts]
+            cmd += ['-pass', '1', '-passlogfile', pass_log,
+                    '-an', '-f', 'null', '/dev/null']
+            cmd = apply_nice(cmd)
             try:
                 r = subprocess.run(cmd, timeout=None, capture_output=False)
                 if r.returncode == 0:
@@ -1688,13 +1909,16 @@ if main_clips:
 
         # Pass 2
         pass2_ok = False
+        sys.stderr.write('    Pass 2/2...\n')
         for attempt in range(3):
-            cmd = ['ffmpeg', '-y', '-v', 'error', '-i', src,
-                   '-map', '0:v:0', '-c:v', 'libx264', '-preset', main_preset,
-                   '-b:v', main_bitrate, '-maxrate', main_maxrate, '-bufsize', main_bufsize,
-                   '-x264opts', bd_x264_opts,
-                   '-pass', '2', '-passlogfile', pass_log,
-                   '-an', out_video]
+            cmd = ['ffmpeg', '-y', '-v', 'error', '-stats', '-i', src,
+                   '-map', '0:v:0', '-c:v', enc_lib, '-preset', main_preset,
+                   '-b:v', main_bitrate, '-maxrate', main_maxrate, '-bufsize', main_bufsize]
+            if not is_hevc:
+                cmd += ['-x264opts', bd_x264_opts]
+            cmd += ['-pass', '2', '-passlogfile', pass_log,
+                    '-an', out_video]
+            cmd = apply_nice(cmd)
             try:
                 r = subprocess.run(cmd, timeout=None, capture_output=False)
                 if r.returncode == 0:
@@ -1783,12 +2007,12 @@ if $MOVIE_ONLY; then
     # Write video tracks
     first=true
     for clip in $MAIN_CLIPS; do
-        vf="$ENCODE_DIR/${clip}_video.h264"
+        vf="$ENCODE_DIR/${clip}_video.$VIDEO_EXT"
         [[ -f "$vf" && -s "$vf" ]] || { warn "Missing/empty video for clip ${clip}"; continue; }
         if $first; then
-            echo "V_MPEG4/ISO/AVC, \"$vf\", fps=$fps, insertSEI, contSPS" >> "$META_FILE"
+            echo "$MUX_VIDEO_TYPE, \"$vf\", fps=$fps, insertSEI, contSPS" >> "$META_FILE"
         else
-            echo "+V_MPEG4/ISO/AVC, \"$vf\", fps=$fps, insertSEI, contSPS" >> "$META_FILE"
+            echo "+$MUX_VIDEO_TYPE, \"$vf\", fps=$fps, insertSEI, contSPS" >> "$META_FILE"
         fi
         first=false
     done
@@ -1844,7 +2068,7 @@ if $MOVIE_ONLY; then
     while read -r meta_line; do log "    $meta_line"; done < "$META_FILE"
 
     log "  Running tsMuxeR..."
-    tsMuxeR "$META_FILE" "$DST" > "$WORK_DIR/.tsmuxer_out.txt" 2>&1 || {
+    run_ff tsMuxeR "$META_FILE" "$DST" > "$WORK_DIR/.tsmuxer_out.txt" 2>&1 || {
         while IFS= read -r tline; do log "    tsMuxeR: $tline"; done < "$WORK_DIR/.tsmuxer_out.txt"
         die "tsMuxeR authoring failed"
     }
@@ -1866,18 +2090,18 @@ else
     mkdir -p "$DST/CERTIFICATE"
 
     # Copy source BD metadata
-    cp "$SOURCE/index.bdmv" "$DST/BDMV/"
-    cp "$SOURCE/MovieObject.bdmv" "$DST/BDMV/"
-    [[ -d "$SOURCE/../CERTIFICATE" ]] && cp -r "$SOURCE/../CERTIFICATE/"* "$DST/CERTIFICATE/" 2>/dev/null || true
-    [[ -d "$SOURCE/CERTIFICATE" ]] && cp -r "$SOURCE/CERTIFICATE/"* "$DST/CERTIFICATE/" 2>/dev/null || true
+    run_ff cp "$SOURCE/index.bdmv" "$DST/BDMV/"
+    run_ff cp "$SOURCE/MovieObject.bdmv" "$DST/BDMV/"
+    [[ -d "$SOURCE/../CERTIFICATE" ]] && run_ff cp -r "$SOURCE/../CERTIFICATE/"* "$DST/CERTIFICATE/" 2>/dev/null || true
+    [[ -d "$SOURCE/CERTIFICATE" ]] && run_ff cp -r "$SOURCE/CERTIFICATE/"* "$DST/CERTIFICATE/" 2>/dev/null || true
 
     # Discover which clips were re-encoded (builtins only)
     ENCODED_CLIP_IDS=""
     encode_dir="$WORK_DIR/encode"
-    for f in "$encode_dir/"*_video.h264; do
+    for f in "$encode_dir/"*_video.$VIDEO_EXT; do
         [[ -f "$f" ]] || continue
         fname="${f##*/}"
-        cid="${fname%_video.h264}"
+        cid="${fname%_video.$VIDEO_EXT}"
         ENCODED_CLIP_IDS+="$cid "
     done
 
@@ -1885,7 +2109,8 @@ else
     log "Re-encoded clips:"
     for cid in $ENCODED_CLIP_IDS; do
         [[ -n "$cid" ]] || continue
-        [[ -f "$encode_dir/${cid}_video.h264" ]] || continue
+        [[ -f "$encode_dir/${cid}_video.$VIDEO_EXT" ]] || continue
+        [[ -f "$DST/BDMV/STREAM/${cid}.m2ts" ]] && continue
         ((++encoded_count))
         fps=${CLIP_FPS[$cid]:-24000/1001}
 
@@ -1898,7 +2123,7 @@ else
         tmpout="$REBUILD_DIR/${cid}_output"
         {
             echo "MUXOPT --no-pcr-on-video-pid --new-audio-pes --vbr --blu-ray"
-            echo "V_MPEG4/ISO/AVC, \"$encode_dir/${cid}_video.h264\", fps=$fps, insertSEI, contSPS"
+            echo "$MUX_VIDEO_TYPE, \"$encode_dir/${cid}_video.$VIDEO_EXT\", fps=$fps, insertSEI, contSPS"
             aidx=0
             while [[ -f "$encode_dir/${cid}_audio_${aidx}.ac3" ]]; do
                 echo "A_AC3, \"$encode_dir/${cid}_audio_${aidx}.ac3\""
@@ -1918,10 +2143,10 @@ else
             continue
         }
 
-        # Copy remuxed output to destination (use zsh glob, no ls/head)
-        local new_m2ts=("$tmpout/BDMV/STREAM/"*.m2ts(N))
-        local new_clpi=("$tmpout/BDMV/CLIPINF/"*.clpi(N))
-        if [[ -n "${new_m2ts[1]:-}" ]] && [[ -n "${new_clpi[1]:-}" ]]; then
+        # Copy remuxed output to destination
+        new_m2ts=("$tmpout/BDMV/STREAM/"*.m2ts)
+        new_clpi=("$tmpout/BDMV/CLIPINF/"*.clpi)
+        if [[ -n "${new_m2ts[0]:-}" ]] && [[ -n "${new_clpi[0]:-}" ]]; then
             run_ff cp "$new_m2ts" "$DST/BDMV/STREAM/${cid}.m2ts" || true
             run_ff cp "$new_clpi" "$DST/BDMV/CLIPINF/${cid}.clpi" || true
             log "    done: ${cid}.m2ts"
@@ -1930,13 +2155,25 @@ else
         fi
     done
 
+    # Build map of extra clip IDs for --no-extras filtering
+    declare -A EXTRA_CLIP_MAP
+    if $NO_EXTRAS; then
+        for cid in $EXTRAS_CLIPS; do
+            [[ -n "$cid" ]] && EXTRA_CLIP_MAP["$cid"]=1
+        done
+    fi
+
     # Copy un-encoded clips verbatim (builtins only)
     log "Copying un-encoded clips..."
     for cid in $ALL_CLIP_IDS; do
         [[ -n "$cid" ]] || continue
         [[ -f "$DST/BDMV/STREAM/${cid}.m2ts" ]] && continue
+        # Skip extras when --no-extras is set
+        if $NO_EXTRAS && [[ -n "${EXTRA_CLIP_MAP[$cid]:-}" ]]; then
+            continue
+        fi
         # Check if this clip was encoded (remux already placed it)
-        local was_encoded=false
+        was_encoded=false
         for ecid in $ENCODED_CLIP_IDS; do
             [[ "$ecid" == "$cid" ]] && was_encoded=true && break
         done
@@ -1949,21 +2186,42 @@ else
         run_ff cp "$SOURCE/CLIPINF/${cid}.clpi" "$DST/BDMV/CLIPINF/${cid}.clpi" || true
     done
 
+    # Copy orphan clips — clips in source STREAM/CLIPINF not referenced by any
+    # playlist but still part of the BD structure (e.g. FirstPlayback assets
+    # referenced directly by MovieObjects or BD-J objects)
+    for m2ts in "$SOURCE/STREAM/"*.m2ts; do
+        [[ -f "$m2ts" ]] || continue
+        fname="${m2ts##*/}"
+        cid="${fname%.m2ts}"
+        [[ -f "$DST/BDMV/STREAM/${cid}.m2ts" ]] && continue
+        log "  Copying orphan clip: ${cid}.m2ts"
+        run_ff cp "$m2ts" "$DST/BDMV/STREAM/${cid}.m2ts" || true
+        [[ -f "$SOURCE/CLIPINF/${cid}.clpi" ]] && run_ff cp "$SOURCE/CLIPINF/${cid}.clpi" "$DST/BDMV/CLIPINF/${cid}.clpi" || true
+    done
+
     # Copy all MPLS files
-    cp "$SOURCE/PLAYLIST/"*.mpls "$DST/BDMV/PLAYLIST/" 2>/dev/null || true
+    run_ff cp "$SOURCE/PLAYLIST/"*.mpls "$DST/BDMV/PLAYLIST/" 2>/dev/null || true
 
     # Copy extra metadata directories
     for dir in AUXDATA META BDJO JAR; do
-        [[ -d "$SOURCE/$dir" ]] && cp -r "$SOURCE/$dir" "$DST/BDMV/" 2>/dev/null || true
+        [[ -d "$SOURCE/$dir" ]] && run_ff cp -r "$SOURCE/$dir" "$DST/BDMV/" 2>/dev/null || true
     done
 
     # Copy BACKUP
-    cp "$SOURCE/index.bdmv" "$DST/BDMV/BACKUP/"
-    cp "$SOURCE/MovieObject.bdmv" "$DST/BDMV/BACKUP/"
-    cp "$SOURCE/BACKUP/PLAYLIST/"*.mpls "$DST/BDMV/BACKUP/PLAYLIST/" 2>/dev/null || true
-    cp "$DST/BDMV/CLIPINF/"*.clpi "$DST/BDMV/BACKUP/CLIPINF/" 2>/dev/null || true
+    run_ff cp "$SOURCE/index.bdmv" "$DST/BDMV/BACKUP/" || true
+    run_ff cp "$SOURCE/MovieObject.bdmv" "$DST/BDMV/BACKUP/" || true
+    run_ff cp "$SOURCE/BACKUP/PLAYLIST/"*.mpls "$DST/BDMV/BACKUP/PLAYLIST/" 2>/dev/null || true
+    run_ff cp "$DST/BDMV/CLIPINF/"*.clpi "$DST/BDMV/BACKUP/CLIPINF/" 2>/dev/null || true
 
 fi  # end if MOVIE_ONLY
+
+# Compute ISO/disc volume label from source title (ISO9660 rules: uppercase, no spaces)
+ISO_LABEL=$(get_source_title "$SOURCE")
+ISO_LABEL="${ISO_LABEL^^}"
+ISO_LABEL="${ISO_LABEL// /_}"
+ISO_LABEL="${ISO_LABEL//[^A-Za-z0-9_]/}"
+ISO_LABEL="${ISO_LABEL:0:32}"
+[[ -z "$ISO_LABEL" ]] && ISO_LABEL="BD_SHRINK"
 
 # Ensure CERTIFICATE exists before ISO/burn phases (tsMuxeR creates it with --blu-ray,
 # but this guarantees it for all paths including edge cases)
@@ -1974,30 +2232,30 @@ if $OUTPUT_ISO; then
     if [[ "$OUTPUT" == *.iso ]]; then
         ISO_OUT="$OUTPUT"
     else
-        local iso_title=$(get_source_title "$SOURCE")
+        iso_title=$(get_source_title "$SOURCE")
         ISO_OUT="${OUTPUT%/}/${iso_title}.iso"
     fi
     log "Creating ISO: ${ISO_OUT}..."
 
     # Only include BDMV and CERTIFICATE in the ISO; never include the .work directory
     if command -v genisoimage &>/dev/null; then
-        genisoimage -udf -allow-limited-size -V "BD_SHRINK" -o "$ISO_OUT" \
+        run_ff genisoimage -udf -allow-limited-size -V "$ISO_LABEL" -o "$ISO_OUT" \
             -graft-points BDMV="$DST/BDMV" CERTIFICATE="$DST/CERTIFICATE" 2>/dev/null || {
             warn "ISO creation failed with genisoimage"
         }
     elif command -v mkisofs &>/dev/null; then
-        mkisofs -udf -V "BD_SHRINK" -o "$ISO_OUT" \
+        run_ff mkisofs -udf -allow-limited-size -V "$ISO_LABEL" -o "$ISO_OUT" \
             -graft-points BDMV="$DST/BDMV" CERTIFICATE="$DST/CERTIFICATE" 2>/dev/null || {
             warn "ISO creation failed with mkisofs"
         }
     elif command -v xorriso &>/dev/null; then
-        xorriso -outdev "$ISO_OUT" -volid "BD_SHRINK" \
+        run_ff xorriso -outdev "$ISO_OUT" -volid "$ISO_LABEL" \
             -map "$DST/BDMV" /BDMV -map "$DST/CERTIFICATE" /CERTIFICATE -commit 2>/dev/null || {
             warn "ISO creation failed with xorriso"
         }
     else
         warn "No ISO creation tool found (genisoimage/mkisofs/xorriso). Install one and run:"
-        warn "  genisoimage -udf -allow-limited-size -V 'BD_SHRINK' -o ${ISO_OUT} \\"
+        warn "  genisoimage -udf -allow-limited-size -V '${ISO_LABEL}' -o ${ISO_OUT} \\"
         warn "    -graft-points BDMV=${DST}/BDMV CERTIFICATE=${DST}/CERTIFICATE"
     fi
 
@@ -2037,6 +2295,16 @@ if [[ -d "$DST" ]] && [[ -d "$DST/BDMV" ]]; then
     fi
 fi
 
+# Final output size check
+if [[ -e "$DST" ]]; then
+    output_bytes=$(du -sb "$DST" | cut -f1)
+    oversized=$(echo "$output_bytes > $TARGET_GB * 1073741824" | bc)
+    if [[ "$oversized" -eq 1 ]]; then
+        output_gb=$(echo "scale=2; $output_bytes / 1073741824" | bc)
+        warn "Output size (${output_gb} GB) exceeds target (${TARGET_GB} GB)"
+    fi
+fi
+
 # ─── Burn ──────────────────────────────────────────────────────────────────────
 if $BURN; then
     burn_output
@@ -2049,10 +2317,15 @@ if $HAS_BDJ && ! $MOVIE_ONLY; then
 elif $MOVIE_ONLY; then
     info "Movie-only — no BD-J concerns."
 fi
-log "Working files retained at: $WORK_DIR (delete manually when satisfied)"
+
+# Cleanup
+if $CLEAN_WORK; then
+    rm -rf "$WORK_DIR" 2>/dev/null || true
+    log "Working directory removed: $WORK_DIR"
+else
+    [[ -n "${REBUILD_DIR:-}" ]] && rm -rf "$REBUILD_DIR" 2>/dev/null || true
+    log "Working files retained at: $WORK_DIR (delete manually when satisfied)"
+fi
 if ! $BURN; then
     log "IMPORTANT: Test the output in VLC or mpv before burning to disc!"
 fi
-
-# Cleanup temp directories
-rm -rf "${REBUILD_DIR:-}" 2>/dev/null || true
