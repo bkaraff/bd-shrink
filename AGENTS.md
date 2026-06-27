@@ -162,6 +162,7 @@ Auto-launched when `-s`/`-o` are omitted (requires `gum`). Source selection retr
 - **Missing file guards** — `MovieObject.bdmv` copy now skips gracefully if file doesn't exist; no more fatal errors on incomplete discs
 - **Resume parity (M5)** — audio track count verified on resume (matches extras behavior)
 - **Branched-title detection (B8)** — warns if multi-clip titles have differing audio/subtitle track counts (seamless branching edge case)
+- **Budget double-count (B9)** — main bitrate is now computed from the UNIQUE set of clips that will actually be encoded (sum of `duration_sec` over `main_clips`), not from summed per-playlist durations. Previously, seamless-branching titles with multiple playlists sharing the same clips (e.g. alternate cuts/angles) had their budgeted duration inflated (e.g. 3h30m instead of 1h51m), producing a too-low bitrate and a too-small ISO. `main_duration_str`/`main_duration_sec` now reflect encoded-clip runtime rather than summed-playlist runtime.
 - **Early diagnosis (B7)** — script exits immediately if no main movie playlist is identified after classification (better error message than later phases)
 - **TUI retry loop (B4)** — rejects unsupported source extensions early with helpful message, loops to let user retry
 - **Budget read tolerance (C1)** — reads are now `|| true` to prevent early exit on truncated `.budget_values.txt`

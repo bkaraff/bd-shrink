@@ -325,6 +325,22 @@ run_tui() {
             OUTPUT_ISO=false
         fi
 
+        # ── Codec ──
+        local codec_default="h264 (AVC, BD-compatible)"
+        [[ "$CODEC" == "hevc" ]] && codec_default="hevc (x265, slower)"
+
+        local codec_choice=$(printf '%s\n' \
+                "h264 (AVC, BD-compatible)" \
+                "hevc (x265, slower)" \
+            | gum choose --limit=1 --height=2 \
+                --header="VIDEO CODEC" --selected="$codec_default" || true)
+
+        if [[ "$codec_choice" == *hevc* ]]; then
+            CODEC="hevc"
+        elif [[ "$codec_choice" == *h264* ]]; then
+            CODEC="h264"
+        fi
+
         # ── Encoding options ──
         local preset_default="$MAIN_PRESET"
 
@@ -660,15 +676,6 @@ done
 [[ "$NICE" =~ ^[0-9]+$ ]] || die "Invalid --nice value $NICE — must be a non-negative integer"
 [[ "$NICE" -le 19 ]] || die "Invalid --nice value $NICE — must be 0-19"
 
-# Derive codec-specific variables
-if [[ "$CODEC" == "hevc" ]]; then
-    VIDEO_EXT="hevc"
-    MUX_VIDEO_TYPE="V_MPEGH/ISO/HEVC"
-else
-    VIDEO_EXT="h264"
-    MUX_VIDEO_TYPE="V_MPEG4/ISO/AVC"
-fi
-
 # --install-deps: show dependency info and exit (no source/output required)
 if $INSTALL_DEPS; then
     show_install_deps
@@ -679,6 +686,15 @@ fi
 if $USE_TUI || { [[ -z "$SOURCE" || -z "$OUTPUT" ]] && [[ -t 1 ]] && command -v gum &>/dev/null; }; then
     USE_TUI=true
     run_tui
+fi
+
+# Derive codec-specific variables (after TUI, which may have changed CODEC)
+if [[ "$CODEC" == "hevc" ]]; then
+    VIDEO_EXT="hevc"
+    MUX_VIDEO_TYPE="V_MPEGH/ISO/HEVC"
+else
+    VIDEO_EXT="h264"
+    MUX_VIDEO_TYPE="V_MPEG4/ISO/AVC"
 fi
 
 # Auto-derive output path from source if not provided
@@ -1432,12 +1448,15 @@ if py_movie_only:
 else:
     available_for_main = target_available - total_menu_size - extras_reencoded_size
 
-# Calculate main movie bitrate
-total_main_dur = 0
-for pl_name in main_pls:
-    total_main_dur += clf['details'][pl_name]['duration']
-    if py_movie_only:
-        break  # movie-only only encodes the first playlist
+# Calculate main movie bitrate from the UNIQUE set of clips that will
+# actually be encoded. Summing per-playlist durations double-counts clips
+# shared between multiple main playlists (seamless branching / alternate
+# cuts) and produces a too-low bitrate, undersizing the output.
+if py_movie_only and main_pls:
+    # Movie-only encodes only the first main playlist (largest by size).
+    total_main_dur = clf['details'][main_pls[0]]['duration']
+else:
+    total_main_dur = sum(clips.get(c, {}).get('duration_sec', 0) for c in main_clips)
 
 main_audio_size = 0
 main_audio_tracks = 0
