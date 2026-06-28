@@ -1609,7 +1609,9 @@ with open(os.path.join(work_dir, '.clip_fps.txt'), 'w', encoding='utf-8') as f:
             d = json.load(open(clip_json, encoding='utf-8'))
             for s in d.get('streams', []):
                 if s.get('codec_type') == 'video':
-                    fps = s.get('r_frame_rate', '24000/1001')
+                    fps = s.get('avg_frame_rate') or '24000/1001'
+                    if fps in ('0/0', '0', ''):
+                        fps = '24000/1001'
                     break
         except:
             pass
@@ -1624,7 +1626,9 @@ if main_clips:
         d = json.load(open(clip_json, encoding='utf-8'))
         for s in d.get('streams', []):
             if s.get('codec_type') == 'video':
-                main_fps = s.get('r_frame_rate', '24000/1001')
+                main_fps = s.get('avg_frame_rate') or '24000/1001'
+                if main_fps in ('0/0', '0', ''):
+                    main_fps = '24000/1001'
                 break
     except:
         pass
@@ -1974,6 +1978,14 @@ if main_clips:
         if audio_tracks == 0:
             sys.stderr.write('  (video-only)\n')
 
+        # Skip the 2-pass video encode if output already exists (resumability —
+        # passlogs may have been cleaned up by a prior run, but the video file
+        # is valid). Audio/sub extraction above still runs so partial state
+        # gets retried; only the expensive video passes are skipped.
+        if os.path.isfile(out_video) and os.path.getsize(out_video) > 0:
+            sys.stderr.write('    video already exists, skipping 2-pass\n')
+            continue
+
         # Pass 1
         # Helper to detect passlog for any encoder (x264 uses -0.log, x265 may vary)
         def passlog_exists():
@@ -2127,10 +2139,20 @@ if $MOVIE_ONLY; then
     for clip in $MAIN_CLIPS; do
         vf="$ENCODE_DIR/${clip}_video.$VIDEO_EXT"
         [[ -f "$vf" && -s "$vf" ]] || { warn "Missing/empty video for clip ${clip}"; continue; }
-        if $first; then
-            echo "$MUX_VIDEO_TYPE, \"$vf\", fps=$fps, insertSEI, contSPS" >> "$META_FILE"
+        if [[ "$MUX_VIDEO_TYPE" == "V_MPEGH/ISO/HEVC" ]]; then
+            # tsMuxeR 2.7.0 asserts on fps= + insertSEI/contSPS for HEVC streams.
+            # Let it auto-detect from the stream VPS/SPS metadata instead.
+            if $first; then
+                echo "$MUX_VIDEO_TYPE, \"$vf\"" >> "$META_FILE"
+            else
+                echo "+$MUX_VIDEO_TYPE, \"$vf\"" >> "$META_FILE"
+            fi
         else
-            echo "+$MUX_VIDEO_TYPE, \"$vf\", fps=$fps, insertSEI, contSPS" >> "$META_FILE"
+            if $first; then
+                echo "$MUX_VIDEO_TYPE, \"$vf\", fps=$fps, insertSEI, contSPS" >> "$META_FILE"
+            else
+                echo "+$MUX_VIDEO_TYPE, \"$vf\", fps=$fps, insertSEI, contSPS" >> "$META_FILE"
+            fi
         fi
         first=false
     done
@@ -2241,7 +2263,12 @@ else
         tmpout="$REBUILD_DIR/${cid}_output"
         {
             echo "MUXOPT --no-pcr-on-video-pid --new-audio-pes --vbr --blu-ray"
-            echo "$MUX_VIDEO_TYPE, \"$encode_dir/${cid}_video.$VIDEO_EXT\", fps=$fps, insertSEI, contSPS"
+            if [[ "$MUX_VIDEO_TYPE" == "V_MPEGH/ISO/HEVC" ]]; then
+                # tsMuxeR 2.7.0 asserts on fps= + insertSEI/contSPS for HEVC streams.
+                echo "$MUX_VIDEO_TYPE, \"$encode_dir/${cid}_video.$VIDEO_EXT\""
+            else
+                echo "$MUX_VIDEO_TYPE, \"$encode_dir/${cid}_video.$VIDEO_EXT\", fps=$fps, insertSEI, contSPS"
+            fi
             aidx=0
             while [[ -f "$encode_dir/${cid}_audio_${aidx}.ac3" ]]; do
                 echo "A_AC3, \"$encode_dir/${cid}_audio_${aidx}.ac3\""
