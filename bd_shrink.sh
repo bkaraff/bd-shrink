@@ -1343,6 +1343,55 @@ log "Menus: ${#MENU_PLAYLISTS[@]} playlist(s) + ${orphan_count} orphan clips"
 # Verify a main movie was identified
 [[ ${#MAIN_PLAYLISTS[@]} -gt 0 ]] || die "No main movie playlist identified. Check the source disc structure."
 
+# Preflight: warn if surgical mode may break navigation (menus + lossless audio change)
+if ! $MOVIE_ONLY && [[ ${#MENU_PLAYLISTS[@]} -gt 0 ]]; then
+    # Check if main audio is lossless (requires transcode in surgical mode)
+    main_audio_is_lossless=false
+    if [[ -n "${MAIN_PLAYLISTS[0]}" ]]; then
+        main_pl="${MAIN_PLAYLISTS[0]}"
+        # Get the first clip of the main movie
+        first_clip=$(python3 - "$CLASSIFY_FILE" "$main_pl" << 'AUDIO_CHECK'
+import json, sys
+try:
+    clf = json.load(open(sys.argv[1], encoding='utf-8'))
+    clips = clf['details'].get(sys.argv[2], {}).get('clips', [])
+    print(clips[0] if clips else '')
+except:
+    print('')
+AUDIO_CHECK
+)
+        if [[ -n "$first_clip" ]]; then
+            # Check clip audio codecs from inventory
+            has_lossless=$(python3 - "$INVENTORY_FILE" "$first_clip" << 'LOSSLESS_CHECK'
+import json, sys
+try:
+    inv = json.load(open(sys.argv[1], encoding='utf-8'))
+    clip = inv['clips'].get(sys.argv[2], {})
+    audio = clip.get('audio', [])
+    for a in audio:
+        codec = a.get('codec', '')
+        if codec in ('dts', 'truehd', 'pcm_s16be', 'pcm_s24be'):
+            print('true')
+            exit(0)
+    print('false')
+except:
+    print('false')
+LOSSLESS_CHECK
+)
+            [[ "$has_lossless" == "true" ]] && main_audio_is_lossless=true
+        fi
+    fi
+    
+    if $main_audio_is_lossless; then
+        warn "=== Surgical Mode Navigation Warning ==="
+        warn "This disc has menus (${#MENU_PLAYLISTS[@]} playlists) and lossless audio tracks."
+        warn "Re-encoding requires transcoding audio (lossless → AC3) and changing stream PIDs."
+        warn "This may cause menus to freeze or navigation to fail (IGS/HDMV compositions won't tear down)."
+        warn "Recommendation: use --movie-only mode instead, or test thoroughly in VLC/mpv before burning."
+        warn "============================================"
+    fi
+fi
+
 # ─── Phase 3: Budget ─────────────────────────────────────────────────────────
 
 log "Phase 3: Calculating space budget..."
@@ -2223,6 +2272,9 @@ else
 
     REBUILD_DIR="$WORK_DIR/rebuild"
     mkdir -p "$REBUILD_DIR"
+    
+    # Initialize nav-unsafe clip tracking (appended to during remuxing)
+    > "$WORK_DIR/.nav_unsafe_clips.txt"
 
     # Build fresh BD structure (don't rm -rf "$DST" — that deletes run.log!)
     mkdir -p "$DST/BDMV/PLAYLIST" "$DST/BDMV/CLIPINF" "$DST/BDMV/STREAM"
@@ -2291,15 +2343,70 @@ else
          # Copy remuxed output to destination
          new_m2ts=("$tmpout/BDMV/STREAM/"*.m2ts)
          new_clpi=("$tmpout/BDMV/CLIPINF/"*.clpi)
-         if [[ -n "${new_m2ts[0]:-}" ]] && [[ -n "${new_clpi[0]:-}" ]]; then
-             # Warn if tsMuxeR split the clip into multiple parts (unsupported in surgical mode)
-             if [[ ${#new_m2ts[@]} -gt 1 ]]; then
-                 warn "  tsMuxeR split clip ${cid} into ${#new_m2ts[@]} parts (only using first)"
-                 warn "  For multi-part remuxing, use --movie-only mode instead"
-             fi
-             run_ff cp "$new_m2ts" "$DST/BDMV/STREAM/${cid}.m2ts" || true
-             run_ff cp "$new_clpi" "$DST/BDMV/CLIPINF/${cid}.clpi" || true
-             log "    done: ${cid}.m2ts"
+          if [[ -n "${new_m2ts[0]:-}" ]] && [[ -n "${new_clpi[0]:-}" ]]; then
+              # Hard-fail if tsMuxeR split the clip into multiple parts (unsupported in surgical mode)
+              if [[ ${#new_m2ts[@]} -gt 1 ]]; then
+                  die "tsMuxeR split clip ${cid} into ${#new_m2ts[@]} parts. Surgical mode cannot handle multi-part clips. Use --movie-only mode instead."
+              fi
+              run_ff cp "$new_m2ts" "$DST/BDMV/STREAM/${cid}.m2ts" || true
+              run_ff cp "$new_clpi" "$DST/BDMV/CLIPINF/${cid}.clpi" || true
+              
+              # Check if remux changed CLPI PIDs or stream coding types (navigation safety)
+              python3 - "$SOURCE/CLIPINF/${cid}.clpi" "$DST/BDMV/CLIPINF/${cid}.clpi" "$WORK_DIR/.nav_unsafe_clips.txt" "$cid" << 'CLPI_DIFF'
+import sys, struct, os
+try:
+    src_clpi = sys.argv[1]
+    dst_clpi = sys.argv[2]
+    unsafe_file = sys.argv[3]
+    clip_id = sys.argv[4]
+    
+    def parse_clpi_streams(clpi_path):
+        """Extract PIDs and stream_coding_types from CLPI ProgramInfo."""
+        if not os.path.isfile(clpi_path):
+            return set()
+        try:
+            with open(clpi_path, 'rb') as f:
+                data = f.read()
+            if len(data) < 20 or data[:4] != b'CLPI':
+                return set()
+            # ProgramInfo offset at bytes 8-11 (big-endian)
+            if len(data) < 12:
+                return set()
+            prog_offset = struct.unpack_from('>I', data, 8)[0]
+            if prog_offset < 20 or prog_offset + 10 > len(data):
+                return set()
+            # StreamCodingInfo loop: offset at prog_offset+8
+            sdi_offset = struct.unpack_from('>H', data, prog_offset + 8)[0]
+            if sdi_offset + prog_offset + 2 > len(data):
+                return set()
+            sdi_base = prog_offset + sdi_offset
+            num_streams = struct.unpack_from('>B', data, sdi_base)[0] if sdi_base < len(data) else 0
+            streams = set()
+            off = sdi_base + 1
+            for _ in range(num_streams):
+                if off + 5 > len(data):
+                    break
+                pid = struct.unpack_from('>H', data, off)[0]
+                coding_type = data[off + 2] if off + 2 < len(data) else 0
+                streams.add((pid, coding_type))
+                sdi_len = struct.unpack_from('>B', data, off + 3)[0] if off + 3 < len(data) else 0
+                off += 4 + sdi_len
+            return streams
+        except Exception:
+            return set()
+    
+    src_streams = parse_clpi_streams(src_clpi)
+    dst_streams = parse_clpi_streams(dst_clpi)
+    
+    # If PID or coding-type sets differ, flag as navigation-unsafe
+    if src_streams and dst_streams and src_streams != dst_streams:
+        with open(unsafe_file, 'a', encoding='utf-8') as f:
+            f.write(f'{clip_id}\n')
+except Exception:
+    pass
+CLPI_DIFF
+              
+              log "    done: ${cid}.m2ts"
          else
              warn "tsMuxeR produced no output for ${cid}"
          fi
@@ -2364,6 +2471,24 @@ else
     run_ff cp "$DST/BDMV/CLIPINF/"*.clpi "$DST/BDMV/BACKUP/CLIPINF/" 2>/dev/null || true
 
 fi  # end if MOVIE_ONLY
+
+# Post-rebuild check: if surgical mode produced nav-unsafe clips, fail loudly
+if ! $MOVIE_ONLY && [[ -f "$WORK_DIR/.nav_unsafe_clips.txt" ]]; then
+    nav_unsafe_clips=$(grep -v '^$' "$WORK_DIR/.nav_unsafe_clips.txt" | sort -u)
+    if [[ -n "$nav_unsafe_clips" ]]; then
+        die "Surgical rebuild produced stream layout changes that will break menu navigation.
+Affected clips: $(echo $nav_unsafe_clips | tr '\n' ' ')
+
+Re-encoding lossless audio and changing stream PIDs requires rewriting MPLS metadata.
+This feature is not yet implemented in surgical mode.
+
+SOLUTION: Use --movie-only mode instead:
+  ./bd_shrink.sh -s /path/to/BDMV -o /output -f --movie-only
+
+The --movie-only mode creates a fresh BD structure with working menus and all content.
+It is the recommended and tested path for discs with complex menu systems."
+    fi
+fi
 
 # Compute ISO/disc volume label from source title (ISO9660 rules: uppercase, no spaces)
 ISO_LABEL=$(get_source_title "$SOURCE")
