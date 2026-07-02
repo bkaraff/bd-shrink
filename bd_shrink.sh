@@ -897,11 +897,16 @@ def parse_mpls(path):
     items.extend(subpath_items)
 
     # Read PlayList_type from AppInfoPlayList (1 = menu/interactive)
+    # Bounds-check appinfo_len to avoid garbage playlist_type from misaligned offset
     playlist_type = 0
-    if off + 5 < len(data):
-        appinfo_len = struct.unpack_from('>I', data, off)[0]
-        if appinfo_len >= 5:
-            playlist_type = data[off + 5]
+    if off + 4 < len(data):
+        try:
+            appinfo_len = struct.unpack_from('>I', data, off)[0]
+            # AppInfoPlayList must be reasonable size (at least 5 bytes)
+            if appinfo_len >= 5 and appinfo_len < 10000 and off + 4 + appinfo_len <= len(data):
+                playlist_type = data[off + 4 + 1]  # offset 4 (length) + 1 byte reserved = playlist_type
+        except (struct.error, IndexError):
+            pass
 
     marks = []
     if num_marks > 0:
@@ -1131,12 +1136,15 @@ for pl_name, pl_data in playlists.items():
         'total_clip_dur': round(sum(item['duration'] for item in pl_data['playitems']), 1),
         'playlist_type': pl_data.get('playlist_type', 0),
     }
-    # Calculate total size from unique clips
+    # Calculate total size from unique clips (exclude zero-duration SubPath clips)
     total_size = 0
     seen_clips = set()
     for item in pl_data['playitems']:
         cid = item['clip']
         if cid in seen_clips:
+            continue
+        # Skip zero-duration clips (SubPath items): they're menu/PiP, not real content
+        if item.get('duration', 0) == 0:
             continue
         seen_clips.add(cid)
         if cid in clip_summaries:
@@ -1191,23 +1199,34 @@ for pl_name, pl_data in pl_sorted:
         menu_pls.append(pl_name)
         continue
 
-    # Check if any referenced clip has video
-    has_video = False
-    is_hd = False
-    for c in clip_list:
-        cs = clips.get(c, {})
-        for v in cs.get('video', []):
-            has_video = True
-            if v.get('height', 0) and v['height'] >= 720:
-                is_hd = True
+     # Check if any referenced clip has video
+     has_video = False
+     is_hd = False
+     for c in clip_list:
+         cs = clips.get(c, {})
+         for v in cs.get('video', []):
+             has_video = True
+             if v.get('height', 0) and v['height'] >= 720:
+                 is_hd = True
 
-    if dur < 5 and not has_video:
-        menu_pls.append(pl_name)
-    elif dur >= 30:
-        extras_pls.append(pl_name)
-    else:
-        # Short clips with video -> menu animations/transitions
-        menu_pls.append(pl_name)
+     # Compute unique size (excluding zero-duration SubPath clips)
+     unique_size_mb = 0
+     seen_clips = set()
+     for item in pl_data['playitems']:
+         cid = item['clip']
+         if cid in seen_clips or item.get('duration', 0) == 0:
+             continue
+         seen_clips.add(cid)
+         if cid in clips:
+             unique_size_mb += clips[cid].get('size_bytes', 0) / 1048576.0
+
+     if dur < 5 and not has_video:
+         menu_pls.append(pl_name)
+     elif dur >= 30 and unique_size_mb >= 50:  # Minimum 50 MB to avoid looping/warning playlists
+         extras_pls.append(pl_name)
+     else:
+         # Short clips with video -> menu animations/transitions
+         menu_pls.append(pl_name)
 
 # Second pass: catch menu-adjacent playlists.
 # Collect clips referenced by known menus, then scan extras for:
@@ -1233,8 +1252,8 @@ extras_pls = adjacent_extras
 # Real movies have both long duration AND large size. Some discs contain
 # bogus playlists that repeat a short clip many times, giving them a huge
 # duration but tiny size; these must not be selected as the main movie.
-# Playlists with similar durations to the size-based main movie are treated
-# as alternate cuts or angles.
+# Playlists with similar durations AND comparable sizes/chapters are treated
+# as alternate cuts or angles (stricter than duration-only window).
 if extras_pls:
     movie_candidates = [pl_name for pl_name in extras_pls
                         if playlists[pl_name]['duration'] >= 600]
@@ -1243,15 +1262,30 @@ if extras_pls:
         main_movie_pls = [max(movie_candidates,
                               key=lambda x: playlists[x].get('total_size_mb', 0))]
         main_dur = playlists[main_movie_pls[0]]['duration']
+        main_size = playlists[main_movie_pls[0]].get('total_size_mb', 0)
+        main_chapters = playlists[main_movie_pls[0]].get('chapters', 0)
 
-        # Include other candidates with similar duration as alternate cuts/angles
+        # Include other candidates as alternate cuts/angles ONLY if:
+        # 1. Duration within ±25% (tighter than ±30%)
+        # 2. AND size within ±50% (to catch legitimate longer/shorter versions)
+        # 3. AND chapters count is similar (both have many or both have few)
         new_extras = []
         for pl_name in extras_pls:
             if pl_name == main_movie_pls[0]:
                 continue
             pl_dur = playlists[pl_name]['duration']
-            # Similar duration to main movie -> alternate cut/angle
-            if main_dur * 0.70 <= pl_dur <= main_dur * 1.30:
+            pl_size = playlists[pl_name].get('total_size_mb', 0)
+            pl_chapters = playlists[pl_name].get('chapters', 0)
+            
+            # Duration similarity: ±25%
+            dur_match = main_dur * 0.75 <= pl_dur <= main_dur * 1.25
+            # Size similarity: ±50%
+            size_match = main_size > 0 and (pl_size * 0.5 <= main_size <= pl_size * 2.0)
+            # Chapters similarity: both have chapters or both don't
+            chapters_match = (main_chapters > 0 and pl_chapters > 0) or (main_chapters == 0 and pl_chapters == 0)
+            
+            # Strict alternate-cut rule: all three must match
+            if dur_match and size_match and chapters_match:
                 main_movie_pls.append(pl_name)
             else:
                 new_extras.append(pl_name)
