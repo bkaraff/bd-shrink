@@ -624,41 +624,49 @@ OUTPUT=""
 WORK_DIR=""
 MAIN_AUDIO_BITRATE="640k"
 NO_EXTRAS=false
+OVERRIDE_MAIN_PLAYLISTS=""  # CSV list of playlist names to force as main
+OVERRIDE_EXTRAS=""           # CSV list of playlist names to force as extras
+OVERRIDE_NOT_EXTRAS=""       # CSV list of playlist names to exclude from extras
+OVERRIDE_MENUS=""            # CSV list of playlist names to force as menus
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -s|--source)       SOURCE="$2"; shift 2 ;;
         -o|--output)       OUTPUT="$2"; shift 2 ;;
         -t|--target)       TARGET_GB="$2"; shift 2 ;;
-        --no-extras)       NO_EXTRAS=true; shift ;;
-        --keep-one)        KEEP_ONE=true; shift ;;
-        --extras-scale)    EXTRAS_SCALE="$2"; shift 2 ;;
-        --extras-ab)       EXTRAS_AUDIO_BITRATE="$2"; shift 2 ;;
-        --extras-crf)      EXTRAS_CRF="$2"; shift 2 ;;
-        --main-preset)     MAIN_PRESET="$2"; shift 2 ;;
-        --main-audio)      MAIN_AUDIO_BITRATE="$2"; shift 2 ;;
-        --commentary-ab)   COMMENTARY_AUDIO_BITRATE="$2"; shift 2 ;;
-        --movie-only)      MOVIE_ONLY=true; shift ;;
-        --iso)             OUTPUT_ISO=true; shift ;;
-        -f|--force)        FORCE=true; shift ;;
-        -n|--dry-run)      DRY_RUN=true; shift ;;
-        -w|--work)         WORK_DIR="$2"; shift 2 ;;
-        --tui)             USE_TUI=true; shift ;;
-        --install-deps)    INSTALL_DEPS=true; shift ;;
-        --burn)            BURN=true; shift ;;
-        --burn-device)     BURN_DEVICE="$2"; shift 2 ;;
-        --clean-work)      CLEAN_WORK=true; shift ;;
-        --codec)           CODEC="$2"; shift 2 ;;
-        --nice)
-            if [[ -n "${2:-}" && ! "$2" =~ ^- ]]; then
-                NICE="$2"; shift 2
-            else
-                NICE=19; shift
-            fi
-            ;;
-        -h|--help)         usage ;;
-        *)                 die "Unknown option: $1" ;;
-    esac
+         --no-extras)       NO_EXTRAS=true; shift ;;
+         --keep-one)        KEEP_ONE=true; shift ;;
+         --main-playlist)   OVERRIDE_MAIN_PLAYLISTS="$2"; shift 2 ;;
+         --extra)           OVERRIDE_EXTRAS="$2"; shift 2 ;;
+         --not-extra)       OVERRIDE_NOT_EXTRAS="$2"; shift 2 ;;
+         --menu)            OVERRIDE_MENUS="$2"; shift 2 ;;
+         --extras-scale)    EXTRAS_SCALE="$2"; shift 2 ;;
+         --extras-ab)       EXTRAS_AUDIO_BITRATE="$2"; shift 2 ;;
+         --extras-crf)      EXTRAS_CRF="$2"; shift 2 ;;
+         --main-preset)     MAIN_PRESET="$2"; shift 2 ;;
+         --main-audio)      MAIN_AUDIO_BITRATE="$2"; shift 2 ;;
+         --commentary-ab)   COMMENTARY_AUDIO_BITRATE="$2"; shift 2 ;;
+         --movie-only)      MOVIE_ONLY=true; shift ;;
+         --iso)             OUTPUT_ISO=true; shift ;;
+         -f|--force)        FORCE=true; shift ;;
+         -n|--dry-run)      DRY_RUN=true; shift ;;
+         -w|--work)         WORK_DIR="$2"; shift 2 ;;
+         --tui)             USE_TUI=true; shift ;;
+         --install-deps)    INSTALL_DEPS=true; shift ;;
+         --burn)            BURN=true; shift ;;
+         --burn-device)     BURN_DEVICE="$2"; shift 2 ;;
+         --clean-work)      CLEAN_WORK=true; shift ;;
+         --codec)           CODEC="$2"; shift 2 ;;
+         --nice)
+             if [[ -n "${2:-}" && ! "$2" =~ ^- ]]; then
+                 NICE="$2"; shift 2
+             else
+                 NICE=19; shift
+             fi
+             ;;
+         -h|--help)         usage ;;
+         *)                 die "Unknown option: $1" ;;
+     esac
 done
 
 # Validate codec
@@ -675,6 +683,15 @@ done
 # Validate nice value
 [[ "$NICE" =~ ^[0-9]+$ ]] || die "Invalid --nice value $NICE — must be a non-negative integer"
 [[ "$NICE" -le 19 ]] || die "Invalid --nice value $NICE — must be 0-19"
+
+# Validate override playlist names (comma-separated 5-digit hex names)
+for override_list in "$OVERRIDE_MAIN_PLAYLISTS" "$OVERRIDE_EXTRAS" "$OVERRIDE_NOT_EXTRAS" "$OVERRIDE_MENUS"; do
+    if [[ -n "$override_list" ]]; then
+        for pl_name in $(echo "$override_list" | tr ',' '\n'); do
+            [[ "$pl_name" =~ ^[0-9A-Fa-f]{5}\.mpls$ ]] || die "Invalid playlist name: $pl_name — must be 5 hex digits + .mpls (e.g., 00000.mpls)"
+        done
+    fi
+done
 
 # --install-deps: show dependency info and exit (no source/output required)
 if $INSTALL_DEPS; then
@@ -1373,6 +1390,116 @@ for pl in "${MAIN_PLAYLISTS[@]}"; do
 done
 log "Extras: ${#EXTRAS_PLAYLISTS[@]} playlist(s)"
 log "Menus: ${#MENU_PLAYLISTS[@]} playlist(s) + ${orphan_count} orphan clips"
+
+# Emit detailed per-playlist classification table for diagnostics
+log ""
+log "=== Detailed Playlist Classification ==="
+python3 - "$CLASSIFY_FILE" << 'CLASS_TABLE'
+import json, sys
+try:
+    clf = json.load(open(sys.argv[1], encoding='utf-8'))
+    details = clf.get('details', {})
+    
+    print("Playlist | Duration | Size(MB) | Chapters | Category")
+    print("-" * 65)
+    for pl_name in sorted(details.keys()):
+        d = details[pl_name]
+        duration_str = d.get('duration_str', '?')
+        size_mb = d.get('size_mb', 0)
+        chapters = d.get('chapters', 0)
+        category = d.get('category', '?')
+        print(f"{pl_name:12} | {duration_str:>6} | {size_mb:>7.1f} | {chapters:>8} | {category}")
+except Exception as e:
+    print(f"Error: {e}", file=sys.stderr)
+CLASS_TABLE
+log "=== End Classification Table ==="
+log ""
+
+# Apply classification overrides (if provided)
+if [[ -n "$OVERRIDE_MAIN_PLAYLISTS" ]] || [[ -n "$OVERRIDE_EXTRAS" ]] || [[ -n "$OVERRIDE_MENUS" ]] || [[ -n "$OVERRIDE_NOT_EXTRAS" ]]; then
+    log "Applying classification overrides..."
+    python3 - "$CLASSIFY_FILE" "$OVERRIDE_MAIN_PLAYLISTS" "$OVERRIDE_EXTRAS" "$OVERRIDE_MENUS" "$OVERRIDE_NOT_EXTRAS" << 'APPLY_OVERRIDES'
+import json, sys
+try:
+    clf = json.load(open(sys.argv[1], encoding='utf-8'))
+    details = clf.get('details', {})
+    
+    override_main = sys.argv[2].split(',') if sys.argv[2] else []
+    override_extras = sys.argv[3].split(',') if sys.argv[3] else []
+    override_menus = sys.argv[4].split(',') if sys.argv[4] else []
+    override_not_extras = sys.argv[5].split(',') if sys.argv[5] else []
+    
+    # Normalize: remove .mpls and empty strings
+    override_main = [p.replace('.mpls', '') for p in override_main if p.strip()]
+    override_extras = [p.replace('.mpls', '') for p in override_extras if p.strip()]
+    override_menus = [p.replace('.mpls', '') for p in override_menus if p.strip()]
+    override_not_extras = [p.replace('.mpls', '') for p in override_not_extras if p.strip()]
+    
+    # Apply overrides
+    for pl_name in details:
+        if pl_name in override_main:
+            clf['main_movie'] = [pl_name]  # Force as only main
+            clf['extras'] = [e for e in clf.get('extras', []) if e != pl_name]
+            clf['menus'] = [m for m in clf.get('menus', []) if m != pl_name]
+            details[pl_name]['category'] = 'main'
+            print(f"  Forced main: {pl_name}.mpls")
+        elif pl_name in override_menus:
+            clf['menus'].append(pl_name)
+            clf['extras'] = [e for e in clf.get('extras', []) if e != pl_name]
+            clf['main_movie'] = [m for m in clf.get('main_movie', []) if m != pl_name]
+            details[pl_name]['category'] = 'menu'
+            print(f"  Forced menu: {pl_name}.mpls")
+        elif pl_name in override_extras:
+            clf['extras'].append(pl_name)
+            clf['menus'] = [m for m in clf.get('menus', []) if m != pl_name]
+            clf['main_movie'] = [m for m in clf.get('main_movie', []) if m != pl_name]
+            details[pl_name]['category'] = 'extras'
+            print(f"  Forced extra: {pl_name}.mpls")
+        elif pl_name in override_not_extras:
+            if pl_name in clf.get('extras', []):
+                clf['extras'].remove(pl_name)
+            clf['menus'].append(pl_name)
+            details[pl_name]['category'] = 'menu'
+            print(f"  Excluded from extras: {pl_name}.mpls")
+    
+    # Remove duplicates and maintain order
+    clf['main_movie'] = list(dict.fromkeys(clf['main_movie']))
+    clf['extras'] = list(dict.fromkeys(clf['extras']))
+    clf['menus'] = list(dict.fromkeys(clf['menus']))
+    
+    json.dump(clf, open(sys.argv[1], 'w', encoding='utf-8'), indent=2)
+except Exception as e:
+    print(f"Error applying overrides: {e}", file=sys.stderr)
+    sys.exit(1)
+APPLY_OVERRIDES
+
+    # Re-read classification after overrides
+    override_output=$(python3 - "$CLASSIFY_FILE" << 'REREAD'
+import json, sys
+d = json.load(open(sys.argv[1], encoding='utf-8'))
+main_list = d.get('main_movie', [])
+print(' '.join(main_list))
+print(' '.join(d.get('extras', [])))
+print(' '.join(d.get('menus', [])))
+print(len(d.get('orphans', [])))
+for pl in main_list:
+    detail = d.get('details', {}).get(pl, {})
+    print(detail.get('duration_str', '?'))
+REREAD
+) || die "Failed to re-parse classify data after overrides"
+    
+    mapfile -t lines <<< "$script_output"
+    main_line="${lines[0]:-}"
+    extras_line="${lines[1]:-}"
+    menu_line="${lines[2]:-}"
+    orphan_count="${lines[3]:-0}"
+    dur_lines=("${lines[@]:4}")
+    
+    IFS=' ' read -ra MAIN_PLAYLISTS <<< "$main_line"
+    IFS=' ' read -ra EXTRAS_PLAYLISTS <<< "$extras_line"
+    IFS=' ' read -ra MENU_PLAYLISTS <<< "$menu_line"
+    log "After overrides: Main=${#MAIN_PLAYLISTS[@]}, Extras=${#EXTRAS_PLAYLISTS[@]}, Menus=${#MENU_PLAYLISTS[@]}"
+fi
 
 # Verify a main movie was identified
 [[ ${#MAIN_PLAYLISTS[@]} -gt 0 ]] || die "No main movie playlist identified. Check the source disc structure."
