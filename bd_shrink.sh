@@ -146,6 +146,12 @@ Options:
       --clean-work        Remove working directory on success
       --codec CODEC       Video codec: h264 or hevc (default: h264)
       --nice [N]          Run encoder/rebuild at low CPU priority (default N=19)
+
+Classification overrides (comma-separated, .mpls optional):
+      --main-playlist LIST Force playlist(s) as the main movie (e.g., 00000.mpls)
+      --extra LIST         Force playlist(s) as extras (re-encoded to 720p)
+      --menu LIST          Force playlist(s) as menus (copied verbatim)
+      --not-extra LIST     Exclude playlist(s) from extras (treat as menu)
   -h, --help             Show this help
 EOF
     exit 1
@@ -634,39 +640,39 @@ while [[ $# -gt 0 ]]; do
         -s|--source)       SOURCE="$2"; shift 2 ;;
         -o|--output)       OUTPUT="$2"; shift 2 ;;
         -t|--target)       TARGET_GB="$2"; shift 2 ;;
-         --no-extras)       NO_EXTRAS=true; shift ;;
-         --keep-one)        KEEP_ONE=true; shift ;;
-         --main-playlist)   OVERRIDE_MAIN_PLAYLISTS="$2"; shift 2 ;;
-         --extra)           OVERRIDE_EXTRAS="$2"; shift 2 ;;
-         --not-extra)       OVERRIDE_NOT_EXTRAS="$2"; shift 2 ;;
-         --menu)            OVERRIDE_MENUS="$2"; shift 2 ;;
-         --extras-scale)    EXTRAS_SCALE="$2"; shift 2 ;;
-         --extras-ab)       EXTRAS_AUDIO_BITRATE="$2"; shift 2 ;;
-         --extras-crf)      EXTRAS_CRF="$2"; shift 2 ;;
-         --main-preset)     MAIN_PRESET="$2"; shift 2 ;;
-         --main-audio)      MAIN_AUDIO_BITRATE="$2"; shift 2 ;;
-         --commentary-ab)   COMMENTARY_AUDIO_BITRATE="$2"; shift 2 ;;
-         --movie-only)      MOVIE_ONLY=true; shift ;;
-         --iso)             OUTPUT_ISO=true; shift ;;
-         -f|--force)        FORCE=true; shift ;;
-         -n|--dry-run)      DRY_RUN=true; shift ;;
-         -w|--work)         WORK_DIR="$2"; shift 2 ;;
-         --tui)             USE_TUI=true; shift ;;
-         --install-deps)    INSTALL_DEPS=true; shift ;;
-         --burn)            BURN=true; shift ;;
-         --burn-device)     BURN_DEVICE="$2"; shift 2 ;;
-         --clean-work)      CLEAN_WORK=true; shift ;;
-         --codec)           CODEC="$2"; shift 2 ;;
-         --nice)
-             if [[ -n "${2:-}" && ! "$2" =~ ^- ]]; then
-                 NICE="$2"; shift 2
-             else
-                 NICE=19; shift
-             fi
-             ;;
-         -h|--help)         usage ;;
-         *)                 die "Unknown option: $1" ;;
-     esac
+        --no-extras)       NO_EXTRAS=true; shift ;;
+        --keep-one)        KEEP_ONE=true; shift ;;
+        --main-playlist)   OVERRIDE_MAIN_PLAYLISTS="$2"; shift 2 ;;
+        --extra)           OVERRIDE_EXTRAS="$2"; shift 2 ;;
+        --not-extra)       OVERRIDE_NOT_EXTRAS="$2"; shift 2 ;;
+        --menu)            OVERRIDE_MENUS="$2"; shift 2 ;;
+        --extras-scale)    EXTRAS_SCALE="$2"; shift 2 ;;
+        --extras-ab)       EXTRAS_AUDIO_BITRATE="$2"; shift 2 ;;
+        --extras-crf)      EXTRAS_CRF="$2"; shift 2 ;;
+        --main-preset)     MAIN_PRESET="$2"; shift 2 ;;
+        --main-audio)      MAIN_AUDIO_BITRATE="$2"; shift 2 ;;
+        --commentary-ab)   COMMENTARY_AUDIO_BITRATE="$2"; shift 2 ;;
+        --movie-only)      MOVIE_ONLY=true; shift ;;
+        --iso)             OUTPUT_ISO=true; shift ;;
+        -f|--force)        FORCE=true; shift ;;
+        -n|--dry-run)      DRY_RUN=true; shift ;;
+        -w|--work)         WORK_DIR="$2"; shift 2 ;;
+        --tui)             USE_TUI=true; shift ;;
+        --install-deps)    INSTALL_DEPS=true; shift ;;
+        --burn)            BURN=true; shift ;;
+        --burn-device)     BURN_DEVICE="$2"; shift 2 ;;
+        --clean-work)      CLEAN_WORK=true; shift ;;
+        --codec)           CODEC="$2"; shift 2 ;;
+        --nice)
+            if [[ -n "${2:-}" && ! "$2" =~ ^- ]]; then
+                NICE="$2"; shift 2
+            else
+                NICE=19; shift
+            fi
+            ;;
+        -h|--help)         usage ;;
+        *)                 die "Unknown option: $1" ;;
+    esac
 done
 
 # Validate codec
@@ -684,11 +690,11 @@ done
 [[ "$NICE" =~ ^[0-9]+$ ]] || die "Invalid --nice value $NICE — must be a non-negative integer"
 [[ "$NICE" -le 19 ]] || die "Invalid --nice value $NICE — must be 0-19"
 
-# Validate override playlist names (comma-separated 5-digit hex names)
+# Validate override playlist names (comma-separated 5-digit hex names, .mpls optional)
 for override_list in "$OVERRIDE_MAIN_PLAYLISTS" "$OVERRIDE_EXTRAS" "$OVERRIDE_NOT_EXTRAS" "$OVERRIDE_MENUS"; do
     if [[ -n "$override_list" ]]; then
         for pl_name in $(echo "$override_list" | tr ',' '\n'); do
-            [[ "$pl_name" =~ ^[0-9A-Fa-f]{5}\.mpls$ ]] || die "Invalid playlist name: $pl_name — must be 5 hex digits + .mpls (e.g., 00000.mpls)"
+            [[ "$pl_name" =~ ^[0-9A-Fa-f]{5}(\.mpls)?$ ]] || die "Invalid playlist name: $pl_name — must be 5 hex digits, optionally with .mpls (e.g., 00000 or 00000.mpls)"
         done
     fi
 done
@@ -1283,8 +1289,8 @@ if extras_pls:
         main_chapters = playlists[main_movie_pls[0]].get('chapters', 0)
 
         # Include other candidates as alternate cuts/angles ONLY if:
-        # 1. Duration within ±25% (tighter than ±30%)
-        # 2. AND size within ±50% (to catch legitimate longer/shorter versions)
+        # 1. Duration within ±25% of main (tighter than the old ±30%)
+        # 2. AND size within a 2x ratio of main (to catch legitimate longer/shorter versions)
         # 3. AND chapters count is similar (both have many or both have few)
         new_extras = []
         for pl_name in extras_pls:
@@ -1294,9 +1300,9 @@ if extras_pls:
             pl_size = playlists[pl_name].get('total_size_mb', 0)
             pl_chapters = playlists[pl_name].get('chapters', 0)
             
-            # Duration similarity: ±25%
+            # Duration similarity: pl within ±25% of main
             dur_match = main_dur * 0.75 <= pl_dur <= main_dur * 1.25
-            # Size similarity: ±50%
+            # Size similarity: within a 2x ratio of each other (main between 0.5x and 2x of pl)
             size_match = main_size > 0 and (pl_size * 0.5 <= main_size <= pl_size * 2.0)
             # Chapters similarity: both have chapters or both don't
             chapters_match = (main_chapters > 0 and pl_chapters > 0) or (main_chapters == 0 and pl_chapters == 0)
@@ -1488,7 +1494,7 @@ for pl in main_list:
 REREAD
 ) || die "Failed to re-parse classify data after overrides"
     
-    mapfile -t lines <<< "$script_output"
+    mapfile -t lines <<< "$override_output"
     main_line="${lines[0]:-}"
     extras_line="${lines[1]:-}"
     menu_line="${lines[2]:-}"
