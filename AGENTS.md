@@ -149,22 +149,17 @@ Auto-launched when `-s`/`-o` are omitted (requires `gum`). Source selection retr
 - BD-J discs with Java code that depends on specific CLPI metadata (timestamps, PIDs) of re-encoded clips may malfunction. Most BD-J menus only play playlists, so surgical mode works for the majority of discs. If a BD-J disc fails, `--movie-only` is the fallback.
 - Some discs have corrupt H.264 in source clips. The script skips these gracefully; the output will lack video for affected clips but won't fail.
 
-## Recent improvements (v0.2.0+)
+## Non-obvious invariants (do not regress)
 
-### Input enhancements
-- **ISO image support** — accepts `.iso` input files; auto-mounts with `mount -o loop,ro` or falls back to `bsdtar`/`7z` extraction if unavailable
-- **TUI validation** — updated source selection to accept `.iso` alongside `.mkv`/`.mp4`/`.m4v` files
+These are subtle behaviors that took real debugging to get right. Verify against the code before changing them; grep for the described logic rather than trusting line numbers (the file shifts).
 
-### Bug fixes
-- **Brace-in-path crashes (H1)** — fixed `.format()` scope in path joining (lines 1739, 1823)
-- **HEVC passlog glob (H2)** — defensive glob for `.log` files instead of hardcoded `-0.log` (lines 1880, 1902, 1906)
-- **Argument validation** — added `--target` integer check and audio-bitrate format validation (`NNNk` or `NNN`)
-- **Missing file guards** — `MovieObject.bdmv` copy now skips gracefully if file doesn't exist; no more fatal errors on incomplete discs
-- **Resume parity (M5)** — audio track count verified on resume (matches extras behavior)
-- **Branched-title detection (B8)** — warns if multi-clip titles have differing audio/subtitle track counts (seamless branching edge case)
-- **Budget double-count (B9)** — main bitrate is now computed from the UNIQUE set of clips that will actually be encoded (sum of `duration_sec` over `main_clips`), not from summed per-playlist durations. Previously, seamless-branching titles with multiple playlists sharing the same clips (e.g. alternate cuts/angles) had their budgeted duration inflated (e.g. 3h30m instead of 1h51m), producing a too-low bitrate and a too-small ISO. `main_duration_str`/`main_duration_sec` now reflect encoded-clip runtime rather than summed-playlist runtime.
-- **Early diagnosis (B7)** — script exits immediately if no main movie playlist is identified after classification (better error message than later phases)
-- **TUI retry loop (B4)** — rejects unsupported source extensions early with helpful message, loops to let user retry
-- **Budget read tolerance (C1)** — reads are now `|| true` to prevent early exit on truncated `.budget_values.txt`
-- **Clip count reporting (C4)** — fixed zero-clip count display (was showing "1" for empty input)
-- **ISO temp cleanup** — ISO mount points created in `/tmp` and cleaned up on exit (even on error)
+- **Budget uses the UNIQUE encoded-clip set** — `main_bitrate_mbps` is derived from the sum of `duration_sec` over the deduplicated `main_clips`, NOT from summed per-playlist durations. Seamless-branching titles share clips across multiple playlists (alternate cuts/angles); summing playlists double-counts runtime, inflates budgeted duration, and produces a too-low bitrate / too-small ISO. `main_duration_sec`/`main_duration_str` reflect encoded-clip runtime.
+- **Python `.format()` in path joins** — inside the heredocs, `os.path.join(..., '{}.m2ts'.format(clip))` is used deliberately; `str.format` on strings containing `{}` from disc paths caused crashes. Do not switch these to f-strings or `%` carelessly.
+- **Passlog detection is a glob, not a fixed suffix** — use `glob.glob(pass_log + '*')`. x264 writes `-0.log`; x265 differs. Never hardcode `-0.log`.
+- **Resume parity** — on resume, both extras and main clips re-verify the audio track count so a partial prior run doesn't leave fewer tracks than expected.
+- **Argument validation** — `--target` must match `^[0-9]+$`; audio bitrates match `^[0-9]+k?$`; `--nice` must be `0-19`. Keep these guards when adding flags.
+- **Missing-file guards** — `MovieObject.bdmv` copy skips gracefully if absent (incomplete discs must not fatal).
+- **Early exit on no main playlist** — classification aborts with a clear message if no main movie is identified, rather than failing deep in a later phase.
+- **Branched-title warning** — multi-clip titles with differing audio/subtitle track counts emit a warning (seamless-branching edge case).
+- **Budget reads tolerate truncation** — reads of `.budget_values.txt` use `|| true` so a truncated dotfile doesn't trip `set -e`.
+- **ISO temp cleanup** — `.iso` inputs mount under `/tmp` and are cleaned up by the `ERR`/exit trap (`cleanup_iso`), even on failure.
