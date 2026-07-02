@@ -175,6 +175,16 @@ Auto-launched when `-s`/`-o` are omitted (requires `gum`). Source selection retr
 - SRT subtitles are extracted but skipped in the tsMuxeR meta (tsMuxeR 2.7.0 on Linux lacks font rendering). PGS subtitles pass through. DVD/VobSub subtitles are filtered out.
 - Movie-only mode allocates all space to video; audio + subtitle + container overhead can push total ~1–2% over target.
 
+## Pending validation (untested on real hardware)
+
+The changes below pass `bash -n` and were validated with mock/fixture data on a machine **without a Blu-ray disc**. They need a full end-to-end run on real source media before `dev` merges to `main`:
+
+- **Full `-n -f` dry-run** on a real BD50 source to exercise all phases (inventory → classify → budget → encode plan → rebuild plan → validate) end-to-end.
+- **Classification overrides** (`--main-playlist`, `--extra`, `--not-extra`, `--menu`): confirm the per-playlist table reflects the override and that Phase 1 preflight arrays (`MAIN/EXTRAS/MENU_PLAYLISTS`) match the rewritten `classify.json`. Verify with both bare (`00001`) and suffixed (`00001.mpls`) names.
+- **Phase 1 hard-fail gates:** confirm a menu disc (IGS/HDMV) with lossless audio actually triggers the nav-unsafe hard-fail, and that `--movie-only` on the same disc succeeds.
+- **Extras heuristics on a seamless-branching title:** confirm alternate cuts/angles are classified as menu-like (copied, not re-encoded at 720p) and that the ±25% duration / 2× size / matching-chapters window behaves as intended.
+- **Actual encode + burn** (`--movie-only`, then surgical) on a real disc, followed by playback verification in VLC/mpv and a hardware player before trusting menu preservation.
+
 ## Known issues
 
 - **IGS/HDMV menu freeze on full-disc re-encodes (surgical mode):** Re-encoding lossless audio (required to fit BD25) changes stream PIDs and track sets. If the disc has IGS/HDMV menus with navigation that references specific streams, the menu may freeze or navigation may fail. The script detects this condition during Phase 1 (preflight) and hard-fails with a clear recommendation to use `--movie-only` mode instead. This is intentional: it prevents shipping a disc with frozen menus. Workaround: use `--movie-only` (always works, no menus).
