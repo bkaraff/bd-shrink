@@ -21,6 +21,7 @@ USE_TUI=false
 INSTALL_DEPS=false
 BURN=false
 BURN_DEVICE=""
+BURN_SPEED=""
 CLEAN_WORK=false
 CODEC="h264"
 NICE=0
@@ -143,6 +144,7 @@ Options:
       --install-deps     Show required tools and install commands, then exit
       --burn              Burn output to BD-R after validation
       --burn-device DEV   Optical drive device path (auto-detected if omitted)
+      --burn-speed N      BD-R write speed multiplier (default: drive max)
       --clean-work        Remove working directory on success
       --codec CODEC       Video codec: h264 or hevc (default: h264)
       --nice [N]          Run encoder/rebuild at low CPU priority (default N=19)
@@ -590,7 +592,9 @@ burn_output() {
         local growisofs_bin
         growisofs_bin="$(command -v growisofs 2>/dev/null || true)"
         if [[ -n "$growisofs_bin" ]]; then
-            run_ff "$growisofs_bin" -dvd-compat -Z "${burn_dev}=${ISO_OUT}" || {
+            local burn_args=(-dvd-compat)
+            [[ -n "$BURN_SPEED" ]] && burn_args+=(-speed "$BURN_SPEED")
+            run_ff "$growisofs_bin" "${burn_args[@]}" -Z "${burn_dev}=${ISO_OUT}" || {
                 die "Burn failed with growisofs"
             }
         else
@@ -613,7 +617,9 @@ burn_output() {
         fi
         log "Piping to $burn_dev via growisofs (no temp ISO)..."
         # Only stream BDMV/CERTIFICATE to the drive, not .work or other siblings
-        run_ff env MKISOFS="$genisoimage_bin" "$growisofs_bin" -dvd-compat -Z "$burn_dev" -udf -allow-limited-size -V "$ISO_LABEL" \
+        local direct_burn_args=(-dvd-compat)
+        [[ -n "$BURN_SPEED" ]] && direct_burn_args+=(-speed "$BURN_SPEED")
+        run_ff env MKISOFS="$genisoimage_bin" "$growisofs_bin" "${direct_burn_args[@]}" -Z "$burn_dev" -udf -allow-limited-size -V "$ISO_LABEL" \
             -graft-points BDMV="$DST/BDMV" CERTIFICATE="$DST/CERTIFICATE" || {
             die "Burn failed with growisofs"
         }
@@ -661,6 +667,7 @@ while [[ $# -gt 0 ]]; do
         --install-deps)    INSTALL_DEPS=true; shift ;;
         --burn)            BURN=true; shift ;;
         --burn-device)     BURN_DEVICE="$2"; shift 2 ;;
+        --burn-speed)      BURN_SPEED="$2"; shift 2 ;;
         --clean-work)      CLEAN_WORK=true; shift ;;
         --codec)           CODEC="$2"; shift 2 ;;
         --nice)
@@ -698,6 +705,11 @@ for override_list in "$OVERRIDE_MAIN_PLAYLISTS" "$OVERRIDE_EXTRAS" "$OVERRIDE_NO
         done
     fi
 done
+
+# Validate burn speed
+if [[ -n "$BURN_SPEED" ]]; then
+    [[ "$BURN_SPEED" =~ ^[0-9]+$ ]] || die "Invalid --burn-speed $BURN_SPEED — must be a positive integer"
+fi
 
 # --install-deps: show dependency info and exit (no source/output required)
 if $INSTALL_DEPS; then
