@@ -65,6 +65,19 @@ Phases:
 | `--movie-only` | Fresh BD with one main-movie playlist | Always works; no menus |
 | Default (surgical) | Original menus/structure preserved | Works for IGS and BD-J; re-encoded clips get new CLPI metadata |
 
+## Phase 1: Preflight & Navigation Safety
+
+**Clip-split detection:** if any source clip is split across multiple playlists, surgical mode is hard-blocked with a clear error. Reason: rebuilding would require demuxing/re-muxing the clip to split it, which is complex and error-prone. Workaround: use `--movie-only`.
+
+**CLPI navigation-safety analysis:** the script parses CLPI clip info structures to detect whether re-encoding will change:
+- Stream IDs (PIDs) — re-encoding audio codec changes track composition
+- Stream coding types — e.g., lossless → AC3
+- Clip markers and EP-map entries — may shift if video properties change
+
+If these changes are detected AND menus exist on the disc (IGS/HDMV or BD-J), the script hard-fails during Phase 1 with a recommendation to use `--movie-only` instead. This guardrail prevents shipping discs with frozen/broken menus.
+
+Rationale: navigating from a playlist to the menu relies on the MPLS PlayList referencing specific stream PIDs and CLPI timestamps. If re-encoding changes those references and the MPLS STN_table isn't updated (Phase 2, deferred), the menu composes with old stream IDs that no longer exist → graphics freeze or audio/video mutes.
+
 ## Flag interactions
 
 - `--movie-only` implies `--keep-one`
@@ -72,6 +85,13 @@ Phases:
 - `-f` is checked **before** dry-run exit — needed even with `-n` if output exists
 - `--iso` creates an ISO; `--burn --iso` also creates one and then burns from it
 - `--nice` with no argument defaults to `N=19`; valid range 0–19. Applied via `systemd-run --property=Nice` for the bash `run_ff` and `nice -n` for encoder subprocesses inside the Phase 4 Python process.
+- Classification override flags (Phase 2 diagnosis + correction):
+  - `--main-playlist NNNNN.mpls` — force a specific playlist as the main movie (overrides heuristic detection)
+  - `--extra NNNNN.mpls,MMMMM.mpls` — force one or more playlists as extras (comma-separated, `.mpls` optional)
+  - `--menu NNNNN.mpls` — force a specific playlist as a menu/non-encode
+  - `--not-extra NNNNN.mpls` — exclude a playlist from extras (reclassify as menu)
+  - Overrides are applied after heuristic classification; re-logged in Phase 2 output
+  - Useful when auto-classification misidentifies content type (e.g., a 90-min documentary classified as alternate cut)
 
 ## Burn path
 
@@ -103,6 +123,17 @@ The MPLS parser extracts SubPlayItem clips from SubPath entries (not just the ma
 ### Orphan-clip safety net
 
 After copying all playlist-referenced clips, the surgical rebuild does a final pass over `SOURCE/STREAM/*.m2ts` and copies any file not already in the output. This catches clips that exist on the disc but are referenced by navigation structures outside of MPLS (e.g. `MovieObject.bdmv` FirstPlayback/TopMenu entries).
+
+### Extras classification heuristics
+
+The script distinguishes "alternate cuts" (alternate angles, scene selections) from "extras" (behind-the-scenes, featurettes) to avoid encoding alternate angles at 720p when they share clips with the main movie. Key signals:
+
+- **Duplicate-clip detection:** playlists sharing clips with the main movie are classified as menu-like structures (not encoded)
+- **Alternate-cut window:** playlists with duration ±25% of main, size ±50% of main, AND matching chapter count are treated as alternate cuts (menu-like, copied as-is)
+- **Extras floor (50 MB minimum):** playlists < 50 MB (even if duration suggests extras) are classified as menus/warnings/logos and copied instead of re-encoded
+- **Short-duration floor:** playlists < 120 s with zero chapters are classified as transitions/logos and copied
+
+These heuristics are applied after MPLS classification (playlist_type field) and can be overridden via `--extra`, `--not-extra`, and `--menu` flags for edge cases (e.g., a documentary misclassified as alternate cut, or a bonus feature too small to encode efficiently).
 
 ## Dependencies
 
@@ -146,7 +177,8 @@ Auto-launched when `-s`/`-o` are omitted (requires `gum`). Source selection retr
 
 ## Known issues
 
-- BD-J discs with Java code that depends on specific CLPI metadata (timestamps, PIDs) of re-encoded clips may malfunction. Most BD-J menus only play playlists, so surgical mode works for the majority of discs. If a BD-J disc fails, `--movie-only` is the fallback.
+- **IGS/HDMV menu freeze on full-disc re-encodes (surgical mode):** Re-encoding lossless audio (required to fit BD25) changes stream PIDs and track sets. If the disc has IGS/HDMV menus with navigation that references specific streams, the menu may freeze or navigation may fail. The script detects this condition during Phase 1 (preflight) and hard-fails with a clear recommendation to use `--movie-only` mode instead. This is intentional: it prevents shipping a disc with frozen menus. Workaround: use `--movie-only` (always works, no menus).
+- **BD-J discs with metadata-dependent Java code:** BD-J menus may reference specific CLPI timestamps or stream PIDs of re-encoded clips. If the Java code depends on exact metadata, playback may malfunction. Most BD-J menus only play playlists and ignore metadata, so surgical mode works for the majority. Test carefully before burning. Workaround: use `--movie-only`.
 - Some discs have corrupt H.264 in source clips. The script skips these gracefully; the output will lack video for affected clips but won't fail.
 
 ## Non-obvious invariants (do not regress)

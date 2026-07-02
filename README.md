@@ -38,9 +38,12 @@ The output is playable in software players and hardware Blu-ray players.
 Preserves the original menus, `index.bdmv`, `MovieObject.bdmv`, and all playlist/CLIP metadata. Only re-encodes the video streams in-place.
 
 **Limitations:**
-- Only works with IGS (bitmap) menus — not BD-J (Java) menus
-- BD-J discs emit a warning but attempt anyway (test carefully)
-- Multi-angle and complex seamless branching may fail
+- Re-encoding lossless audio (required to fit BD25) changes stream PIDs and track sets. If the disc has IGS/HDMV menus that reference specific stream entries, those menus may freeze or navigation may fail (see workaround below).
+- BD-J discs with Java navigation code: stream metadata changes may cause playback issues. Test carefully before burning.
+- Multi-angle and complex seamless branching may fail.
+
+**Workaround for menu issues:**
+If during encode the script detects that re-encoding would break navigation (stream layout changes on a menu disc), it will hard-fail with a clear message recommending `--movie-only` mode instead. This is intentional: it prevents shipping a disc with frozen menus. Use `--movie-only` for discs with complex menus — it's the tested and reliable path.
 
 ## Audio & Subtitles
 
