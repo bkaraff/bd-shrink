@@ -1234,34 +1234,34 @@ for pl_name, pl_data in pl_sorted:
         menu_pls.append(pl_name)
         continue
 
-     # Check if any referenced clip has video
-     has_video = False
-     is_hd = False
-     for c in clip_list:
-         cs = clips.get(c, {})
-         for v in cs.get('video', []):
-             has_video = True
-             if v.get('height', 0) and v['height'] >= 720:
-                 is_hd = True
+    # Check if any referenced clip has video
+    has_video = False
+    is_hd = False
+    for c in clip_list:
+        cs = clips.get(c, {})
+        for v in cs.get('video', []):
+            has_video = True
+            if v.get('height', 0) and v['height'] >= 720:
+                is_hd = True
 
-     # Compute unique size (excluding zero-duration SubPath clips)
-     unique_size_mb = 0
-     seen_clips = set()
-     for item in pl_data['playitems']:
-         cid = item['clip']
-         if cid in seen_clips or item.get('duration', 0) == 0:
-             continue
-         seen_clips.add(cid)
-         if cid in clips:
-             unique_size_mb += clips[cid].get('size_bytes', 0) / 1048576.0
+    # Compute unique size (excluding zero-duration SubPath clips)
+    unique_size_mb = 0
+    seen_clips = set()
+    for item in pl_data['playitems']:
+        cid = item['clip']
+        if cid in seen_clips or item.get('duration', 0) == 0:
+            continue
+        seen_clips.add(cid)
+        if cid in clips:
+            unique_size_mb += clips[cid].get('size_bytes', 0) / 1048576.0
 
-     if dur < 5 and not has_video:
-         menu_pls.append(pl_name)
-     elif dur >= 30 and unique_size_mb >= 50:  # Minimum 50 MB to avoid looping/warning playlists
-         extras_pls.append(pl_name)
-     else:
-         # Short clips with video -> menu animations/transitions
-         menu_pls.append(pl_name)
+    if dur < 5 and not has_video:
+        menu_pls.append(pl_name)
+    elif dur >= 30 and unique_size_mb >= 50:  # Minimum 50 MB to avoid looping/warning playlists
+        extras_pls.append(pl_name)
+    else:
+        # Short clips with video -> menu animations/transitions
+        menu_pls.append(pl_name)
 
 # Second pass: catch menu-adjacent playlists.
 # Collect clips referenced by known menus, then scan extras for:
