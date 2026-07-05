@@ -1244,16 +1244,9 @@ for pl_name, pl_data in pl_sorted:
             if v.get('height', 0) and v['height'] >= 720:
                 is_hd = True
 
-    # Compute unique size (excluding zero-duration SubPath clips)
-    unique_size_mb = 0
-    seen_clips = set()
-    for item in pl_data['playitems']:
-        cid = item['clip']
-        if cid in seen_clips or item.get('duration', 0) == 0:
-            continue
-        seen_clips.add(cid)
-        if cid in clips:
-            unique_size_mb += clips[cid].get('size_bytes', 0) / 1048576.0
+    # Use precomputed unique size from inventory (already excludes
+    # zero-duration SubPath clips and deduplicates shared clips)
+    unique_size_mb = pl_data.get('total_size_mb', 0)
 
     if dur < 5 and not has_video:
         menu_pls.append(pl_name)
@@ -2653,7 +2646,7 @@ fi  # end if MOVIE_ONLY
 
 # Post-rebuild check: if surgical mode produced nav-unsafe clips, fail loudly
 if ! $MOVIE_ONLY && [[ -f "$WORK_DIR/.nav_unsafe_clips.txt" ]]; then
-    nav_unsafe_clips=$(grep -v '^$' "$WORK_DIR/.nav_unsafe_clips.txt" | sort -u)
+    nav_unsafe_clips=$(grep -v '^$' "$WORK_DIR/.nav_unsafe_clips.txt" | sort -u || true)
     if [[ -n "$nav_unsafe_clips" ]]; then
         die "Surgical rebuild produced stream layout changes that will break menu navigation.
 Affected clips: $(echo $nav_unsafe_clips | tr '\n' ' ')
