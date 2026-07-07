@@ -1446,10 +1446,15 @@ try:
     override_menus = [p.replace('.mpls', '') for p in override_menus if p.strip()]
     override_not_extras = [p.replace('.mpls', '') for p in override_not_extras if p.strip()]
     
+    # When forcing main playlists, clear auto-detected main to allow
+    # multiple overrides (e.g. alternate cuts). Append inside the loop
+    # so all matching entries accumulate; the dedup below is a no-op.
+    if override_main:
+        clf['main_movie'] = []
     # Apply overrides
     for pl_name in details:
         if pl_name in override_main:
-            clf['main_movie'] = [pl_name]  # Force as only main
+            clf['main_movie'].append(pl_name)
             clf['extras'] = [e for e in clf.get('extras', []) if e != pl_name]
             clf['menus'] = [m for m in clf.get('menus', []) if m != pl_name]
             details[pl_name]['category'] = 'main'
