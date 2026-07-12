@@ -2361,22 +2361,32 @@ if $OUTPUT_ISO; then
     log "Creating ISO: ${ISO_OUT}..."
 
     # Only include BDMV and CERTIFICATE in the ISO; never include the .work directory
+    # Priority: genisoimage > real mkisofs (not xorriso-emulated) > xorriso native
+    _use_native_xorriso=false
     if command -v genisoimage &>/dev/null; then
         run_ff genisoimage -udf -allow-limited-size -V "$ISO_LABEL" -o "$ISO_OUT" \
             -graft-points BDMV="$DST/BDMV" CERTIFICATE="$DST/CERTIFICATE" 2>/dev/null || {
             warn "ISO creation failed with genisoimage"
         }
     elif command -v mkisofs &>/dev/null; then
-        run_ff mkisofs -udf -allow-limited-size -V "$ISO_LABEL" -o "$ISO_OUT" \
-            -graft-points BDMV="$DST/BDMV" CERTIFICATE="$DST/CERTIFICATE" 2>/dev/null || {
-            warn "ISO creation failed with mkisofs"
-        }
-    elif command -v xorriso &>/dev/null; then
+        # Check whether mkisofs is really xorriso (which does not support -udf)
+        if LC_ALL=C mkisofs --version 2>&1 | grep -qi xorriso; then
+            _use_native_xorriso=true
+        else
+            run_ff mkisofs -udf -allow-limited-size -V "$ISO_LABEL" -o "$ISO_OUT" \
+                -graft-points BDMV="$DST/BDMV" CERTIFICATE="$DST/CERTIFICATE" 2>/dev/null || {
+                warn "ISO creation failed with mkisofs"
+            }
+        fi
+    else
+        _use_native_xorriso=true
+    fi
+    if $_use_native_xorriso && command -v xorriso &>/dev/null; then
         run_ff xorriso -outdev "$ISO_OUT" -volid "$ISO_LABEL" \
             -map "$DST/BDMV" /BDMV -map "$DST/CERTIFICATE" /CERTIFICATE -commit 2>/dev/null || {
             warn "ISO creation failed with xorriso"
         }
-    else
+    elif $_use_native_xorriso; then
         warn "No ISO creation tool found (genisoimage/mkisofs/xorriso). Install one and run:"
         warn "  genisoimage -udf -allow-limited-size -V '${ISO_LABEL}' -o ${ISO_OUT} \\"
         warn "    -graft-points BDMV=${DST}/BDMV CERTIFICATE=${DST}/CERTIFICATE"
