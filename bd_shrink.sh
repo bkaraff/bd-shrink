@@ -691,9 +691,11 @@ fi
 # Derive codec-specific variables (after TUI, which may have changed CODEC)
 if [[ "$CODEC" == "hevc" ]]; then
     VIDEO_EXT="hevc"
+    TRACK_ARG=""
     MUX_VIDEO_TYPE="V_MPEGH/ISO/HEVC"
 else
-    VIDEO_EXT="h264"
+    VIDEO_EXT="mkv"
+    TRACK_ARG=", track=1"
     MUX_VIDEO_TYPE="V_MPEG4/ISO/AVC"
 fi
 
@@ -1731,7 +1733,7 @@ movie_only = sys.argv[20] == 'true'
 codec = sys.argv[21]
 nice = int(sys.argv[22])
 enc_lib = 'libx265' if codec == 'hevc' else 'libx264'
-video_ext = 'hevc' if codec == 'hevc' else 'h264'
+video_ext = 'hevc' if codec == 'hevc' else 'mkv'
 pass_prefix = 'x265' if codec == 'hevc' else 'x264'
 is_hevc = codec == 'hevc'
 
@@ -2128,9 +2130,9 @@ if $MOVIE_ONLY; then
         vf="$ENCODE_DIR/${clip}_video.$VIDEO_EXT"
         [[ -f "$vf" && -s "$vf" ]] || { warn "Missing/empty video for clip ${clip}"; continue; }
         if $first; then
-            echo "$MUX_VIDEO_TYPE, \"$vf\", fps=$fps, insertSEI, contSPS" >> "$META_FILE"
+            echo "$MUX_VIDEO_TYPE, \"$vf\"${TRACK_ARG}, fps=$fps, insertSEI, contSPS" >> "$META_FILE"
         else
-            echo "+$MUX_VIDEO_TYPE, \"$vf\", fps=$fps, insertSEI, contSPS" >> "$META_FILE"
+            echo "+$MUX_VIDEO_TYPE, \"$vf\"${TRACK_ARG}, fps=$fps, insertSEI, contSPS" >> "$META_FILE"
         fi
         first=false
     done
@@ -2241,7 +2243,7 @@ else
         tmpout="$REBUILD_DIR/${cid}_output"
         {
             echo "MUXOPT --no-pcr-on-video-pid --new-audio-pes --vbr --blu-ray"
-            echo "$MUX_VIDEO_TYPE, \"$encode_dir/${cid}_video.$VIDEO_EXT\", fps=$fps, insertSEI, contSPS"
+            echo "$MUX_VIDEO_TYPE, \"$encode_dir/${cid}_video.$VIDEO_EXT\"${TRACK_ARG}, fps=$fps, insertSEI, contSPS"
             aidx=0
             while [[ -f "$encode_dir/${cid}_audio_${aidx}.ac3" ]]; do
                 echo "A_AC3, \"$encode_dir/${cid}_audio_${aidx}.ac3\""
