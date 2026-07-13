@@ -1689,7 +1689,7 @@ MAIN_CLIPS="${MAIN_CLIPS%$'\n'}"
 ALL_CLIP_IDS="${ALL_CLIP_IDS%$'\n'}"
 
 # Common x264 BD-compat opts
-BD_X264_OPTS="bluray-compat=1:vbv-maxrate=40000:vbv-bufsize=30000"
+BD_X264_OPTS="bluray-compat=1"
 
 # Encode extras (single-pass CRF, downscale to 720p)
 if [[ -n "$EXTRAS_CLIPS" ]] && ! $NO_EXTRAS && ! $MOVIE_ONLY; then
@@ -1701,7 +1701,7 @@ if [[ -n "$MAIN_CLIPS" ]]; then
     log "Encoding main movie..."
     # Trim trailing newline from clip list
     MAIN_CLIPS="${MAIN_CLIPS%$'\n'}"
-    log "  Bitrate: $(( MAIN_BITRATE / 1000000 )) Mbps, preset: $MAIN_PRESET"
+    log "  Bitrate: $(python3 -c "print(round(${MAIN_BITRATE}/1000000,2))") Mbps, preset: $MAIN_PRESET"
 fi
 
 # Run ALL encoding in a single Python process.
@@ -1894,7 +1894,7 @@ if not no_extras and not movie_only:
         if src_height > 720:
             video_filter = ['-vf', 'scale={}'.format(extras_scale)]
 
-        x264_full_opts = '{}:vbv-maxrate=12000:vbv-bufsize=12000'.format(bd_x264_opts)
+        x264_full_opts = 'bluray-compat=1:vbv-maxrate=12000:vbv-bufsize=12000'
         for attempt in range(3):
             cmd = ['ffmpeg', '-y', '-v', 'error', '-stats', '-i', src,
                    '-map', '0:v:0', '-c:v', enc_lib, '-preset', 'medium',
@@ -1992,7 +1992,7 @@ if main_clips:
                    '-map', '0:v:0', '-c:v', enc_lib, '-preset', main_preset,
                    '-b:v', main_bitrate]
             if not is_hevc:
-                cmd += ['-x264opts', bd_x264_opts]
+                cmd += ['-x264opts', 'bluray-compat=1']
             cmd += ['-pass', '1', '-passlogfile', pass_log,
                     '-an', '-f', 'null', '/dev/null']
             cmd = apply_nice(cmd)
@@ -2018,7 +2018,7 @@ if main_clips:
                    '-map', '0:v:0', '-c:v', enc_lib, '-preset', main_preset,
                    '-b:v', main_bitrate, '-maxrate', main_maxrate, '-bufsize', main_bufsize]
             if not is_hevc:
-                cmd += ['-x264opts', bd_x264_opts]
+                cmd += ['-x264opts', 'bluray-compat=1']
             cmd += ['-pass', '2', '-passlogfile', pass_log,
                     '-an', out_video]
             cmd = apply_nice(cmd)
@@ -2041,30 +2041,19 @@ if main_clips:
                 try: os.remove(f)
                 except: pass
 
-        # Validate output is a valid H.264 raw stream before accepting
-        if pass2_ok and os.path.isfile(out_video) and os.path.getsize(out_video) > 0:
-            try:
-                with open(out_video, 'rb') as vf:
-                    magic = vf.read(4)
-                if len(magic) >= 3 and magic[:3] not in (b'\x00\x00\x00', b'\x00\x00\x01'):
-                    sys.stderr.write('  WARNING: {} may be corrupt (bad H.264 stream)\n'.format(clip))
-                    pass2_ok = False
-            except:
-                pass2_ok = False
-
         if pass2_ok:
             sys.stderr.write('    done ({} audio, {} subtitle)\n'.format(audio_tracks, sub_tracks))
             for f in glob.glob(pass_log + '*'):
                 try: os.remove(f)
                 except: pass
         else:
-            sys.stderr.write('  Pass 2 failed after 3 attempts\n')
+            sys.stderr.write('  Pass 2 failed\n')
             for f in glob.glob(pass_log + '*'):
                 try: os.remove(f)
                 except: pass
-            # Remove corrupt output so meta construction doesn't pick it up
-            try: os.remove(out_video)
-            except: pass
+            if os.path.isfile(out_video):
+                try: os.remove(out_video)
+                except: pass
 
 PYEOF
 log "  Encoding complete."
