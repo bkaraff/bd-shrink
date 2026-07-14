@@ -694,8 +694,8 @@ if [[ "$CODEC" == "hevc" ]]; then
     TRACK_ARG=""
     MUX_VIDEO_TYPE="V_MPEGH/ISO/HEVC"
 else
-    VIDEO_EXT="mkv"
-    TRACK_ARG=", track=1"
+    VIDEO_EXT="h264"
+    TRACK_ARG=""
     MUX_VIDEO_TYPE="V_MPEG4/ISO/AVC"
 fi
 
@@ -1553,9 +1553,13 @@ with open(os.path.join(work_dir, '.clip_precompute.txt'), 'w', encoding='utf-8')
     for cid, c in data.get('clips', {}).items():
         aud = len(c.get('audio', []))
         sub = len(c.get('subtitles', []))
-        vs = c.get('video', [{}])[0] if c.get('video') else {}
-        h = vs.get('height', 1080) or 1080
-        w = vs.get('width', 1920) or 1920
+        if c.get('video'):
+            vs = c['video'][0]
+            h = vs.get('height', 1080) or 1080
+            w = vs.get('width', 1920) or 1920
+        else:
+            h = 0
+            w = 0
         f.write(f'{cid}|{aud}|{sub}|{h}|{w}\n')
 
 # --- Phase 4: budget values ---
@@ -1733,7 +1737,7 @@ movie_only = sys.argv[20] == 'true'
 codec = sys.argv[21]
 nice = int(sys.argv[22])
 enc_lib = 'libx265' if codec == 'hevc' else 'libx264'
-video_ext = 'hevc' if codec == 'hevc' else 'mkv'
+video_ext = 'hevc' if codec == 'hevc' else 'h264'
 pass_prefix = 'x265' if codec == 'hevc' else 'x264'
 is_hevc = codec == 'hevc'
 
@@ -1835,6 +1839,10 @@ if not no_extras and not movie_only:
         cd = clip_data.get(clip, {'aud':0, 'sub':0, 'h':1080})
         src_aud, src_sub, src_height = cd['aud'], cd['sub'], cd['h']
 
+        if src_height == 0:
+            sys.stderr.write('  [{}/{}] Extra: {}.m2ts — skipping (no video stream)\n'.format(clip_idx + 1, total_clips, clip))
+            continue
+
         clip_idx += 1
         sys.stderr.write('  [{}/{}] Extra: {}.m2ts\n'.format(clip_idx, total_clips, clip))
 
@@ -1919,6 +1927,10 @@ if main_clips:
         pass_log = os.path.join(work_dir, pass_prefix + '_{}.log'.format(clip))
         cd = clip_data.get(clip, {'aud':0, 'sub':0, 'h':1080})
         src_aud, src_sub = cd['aud'], cd['sub']
+
+        if cd['h'] == 0:
+            sys.stderr.write('  [{}/{}] Main: {}.m2ts — skipping (no video stream)\n'.format(clip_idx + 1, total_clips, clip))
+            continue
 
         clip_idx += 1
         sys.stderr.write('  [{}/{}] Main: {}.m2ts\n'.format(clip_idx, total_clips, clip))
