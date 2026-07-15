@@ -355,7 +355,7 @@ run_tui() {
             speed_profile="Extreme (veryslow, 2-pass)"
         fi
 
-        local speed_choice=$(print -l \
+        local speed_choice=$(printf '%s\n' \
                 "Quality (slow, 2-pass)" \
                 "Fast (medium, 1-pass)" \
                 "Quick (fast, 1-pass)" \
