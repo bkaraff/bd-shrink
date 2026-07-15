@@ -1441,9 +1441,17 @@ for c in extras_clips:
             is_hd = True
             resolution = f"{w}x{h}"
 
-    audio_bitrate = int(extras_audio_bitrate_str.replace('k', '')) * 1000
-    num_audio = len(cs.get('audio', []))
-    total_audio_bitrate = audio_bitrate * max(1, num_audio)  # all audio tracks at same bitrate
+    # Audio is passthrough — estimate from source bitrates, not configured values
+    total_audio_bitrate = 0
+    for a in cs.get('audio', []):
+        if a.get('codec_name', a.get('codec', '')) in ('mp3', 'mp3float', 'mp2', 'mp2float'):
+            continue  # MPEG audio skipped, don't count
+        rate = a.get('bit_rate', 0) or 0
+        if rate == 0:
+            codec = a.get('codec_name', a.get('codec', ''))
+            rate = {'dts': 1509000, 'truehd': 2000000, 'eac3': 1536000,
+                    'pcm_bluray': 4608000}.get(codec, 256000)
+        total_audio_bitrate += rate
 
     if is_hd and dur > 0:
         # Estimate: 720p CRF 22 ~ 2-4 Mbps video
@@ -1491,14 +1499,23 @@ if total_main_dur > 0:
     # Use actual audio track count from the first main clip, capped at 8
     first_cid = next(iter(main_clips)) if main_clips else None
     first_clip = inv['clips'].get(first_cid, {}) if first_cid else {}
-    main_audio_count = min(8, max(1, len(first_clip.get('audio', []))))
+    # Audio is passthrough — estimate from source bitrates
+    src_audio = first_clip.get('audio', [])
+    main_audio_count = min(8, max(1, len(src_audio)))
     for i in range(main_audio_count):
-        if i == 0:
-            rate = int(main_audio_bitrate_str.replace('k', '')) * 1000
-        else:
-            main_audio_tracks += 1
-            rate = int(commentary_audio_bitrate_str.replace('k', '')) * 1000
+        if i >= len(src_audio):
+            break
+        a = src_audio[i]
+        if a.get('codec_name', a.get('codec', '')) in ('mp3', 'mp3float', 'mp2', 'mp2float'):
+            continue  # MPEG audio skipped
+        rate = a.get('bit_rate', 0) or 0
+        if rate == 0:
+            codec = a.get('codec_name', a.get('codec', ''))
+            rate = {'dts': 1509000, 'truehd': 2000000, 'eac3': 1536000,
+                    'pcm_bluray': 4608000}.get(codec, 640000)
         main_audio_size += int((rate * total_main_dur) / 8)
+        if i > 0:
+            main_audio_tracks += 1
 
 main_bitrate = 0
 if total_main_dur > 0:
@@ -1630,6 +1647,20 @@ for t in ct:
 with open(os.path.join(work_dir, '.main_chapters.txt'), 'w', encoding='utf-8') as f:
     f.write(';'.join(chapters) + '\n')
 
+# Helper: convert ffprobe framerate fraction (e.g. '24000/1001') to float for
+# tsMuxeR. tsMuxeR uses atof() which stops at '/' so '24000/1001' becomes 24000.
+def fps_float(frac):
+    if '/' in str(frac):
+        try:
+            a, b = frac.split('/')
+            return round(float(a) / float(b), 3)
+        except:
+            return 23.976
+    try:
+        return float(frac)
+    except:
+        return 23.976
+
 # --- Phase 5: FPS of all clips (surgical mode needs per-clip FPS) ---
 with open(os.path.join(work_dir, '.clip_fps.txt'), 'w', encoding='utf-8') as f:
     for cid in data.get('clips', {}):
@@ -1643,7 +1674,7 @@ with open(os.path.join(work_dir, '.clip_fps.txt'), 'w', encoding='utf-8') as f:
                     break
         except:
             pass
-        f.write(f'{cid}|{fps}\n')
+        f.write(f'{cid}|{fps_float(fps)}\n')
 
 # --- Phase 5: main FPS (from first main clip) ---
 main_fps = '24000/1001'
@@ -1659,7 +1690,7 @@ if main_clips:
     except:
         pass
 with open(os.path.join(work_dir, '.main_fps.txt'), 'w', encoding='utf-8') as f:
-    f.write(f'{main_fps}\n')
+    f.write(f'{fps_float(main_fps)}\n')
 
 # --- Phase 5: all clip IDs (surgical mode needs the full list) ---
 with open(os.path.join(work_dir, '.all_clips.txt'), 'w', encoding='utf-8') as f:
@@ -1806,6 +1837,14 @@ def get_audio_codecs(clip):
     except:
         return []
 
+def audio_ext(codec):
+    """Return file extension for an audio codec (tsMuxeR-compatible)."""
+    m = {'ac3': '.ac3', 'eac3': '.eac3', 'dts': '.dts',
+         'truehd': '.thd',
+         'pcm_bluray': '.wav', 'pcm_s16be': '.wav', 'pcm_s24be': '.wav',
+         'pcm_s16le': '.wav', 'pcm_s24le': '.wav'}
+    return m.get(codec, '.ac3')
+
 def sub_ext(codec):
     if codec in ('subrip', 'srt', 'text'):
         return 'srt'
@@ -1871,29 +1910,32 @@ if not no_extras and not movie_only:
         clip_idx += 1
         sys.stderr.write('  [{}/{}] Extra: {}.m2ts\n'.format(clip_idx, total_clips, clip))
 
-        # Audio extraction
+        # Audio extraction (passthrough — stream-copy all non-MPEG tracks)
         audio_tracks = 0
         if src_aud > 0:
             audio_codecs = get_audio_codecs(clip)
             audio_args = ['ffmpeg', '-y', '-v', 'error', '-fflags', '+genpts', '-i', src]
             actual_audio_idx = 0
+            track_exts = []
             for ai in range(src_aud):
                 codec = audio_codecs[ai] if ai < len(audio_codecs) else '?'
                 if codec in ('mp3', 'mp3float', 'mp2', 'mp2float'):
                     sys.stderr.write('    skipping MPEG audio track {}\n'.format(ai))
                     continue
-                out_path = os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, actual_audio_idx))
-                if codec in ('ac3', 'eac3'):
-                    audio_args += ['-map', '0:a:{}'.format(ai), '-c:a', 'copy', out_path]
-                else:
-                    audio_args += ['-map', '0:a:{}'.format(ai), '-c:a', 'ac3',
-                                   '-b:a', extras_audio_bitrate, out_path]
+                ext = audio_ext(codec)
+                track_exts.append(ext)
+                out_path = os.path.join(encode_dir, '{}_audio_{}{}'.format(clip, actual_audio_idx, ext))
+                audio_args += ['-map', '0:a:{}'.format(ai), '-c:a', 'copy']
+                if codec in ('truehd',):
+                    audio_args += ['-f', 'truehd']
+                audio_args += [out_path]
                 actual_audio_idx += 1
-            first_audio = os.path.join(encode_dir, '{}_audio_0.ac3'.format(clip))
+            first_audio = os.path.join(encode_dir, '{}_audio_0{}'.format(clip, track_exts[0])) if track_exts else None
             if actual_audio_idx > 0 and run_ff(audio_args, out_file=first_audio):
                 audio_tracks = actual_audio_idx
                 for ai in range(actual_audio_idx):
-                    if not os.path.isfile(os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, ai))):
+                    ext = track_exts[ai]
+                    if not os.path.isfile(os.path.join(encode_dir, '{}_audio_{}{}'.format(clip, ai, ext))):
                         audio_tracks = 0
                         break
 
@@ -1960,31 +2002,32 @@ if main_clips:
         clip_idx += 1
         sys.stderr.write('  [{}/{}] Main: {}.m2ts\n'.format(clip_idx, total_clips, clip))
 
-        # Audio extraction
+        # Audio extraction (passthrough — stream-copy all non-MPEG tracks)
         audio_tracks = 0
         if src_aud > 0:
             audio_codecs = get_audio_codecs(clip)
             audio_args = ['ffmpeg', '-y', '-v', 'error', '-fflags', '+genpts', '-i', src]
             actual_audio_idx = 0
+            track_exts = []
             for ai in range(src_aud):
                 codec = audio_codecs[ai] if ai < len(audio_codecs) else '?'
                 if codec in ('mp3', 'mp3float', 'mp2', 'mp2float'):
                     sys.stderr.write('    skipping MPEG audio track {}\n'.format(ai))
                     continue
-                out_path = os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, actual_audio_idx))
-                if codec in ('ac3', 'eac3'):
-                    audio_args += ['-map', '0:a:{}'.format(ai), '-c:a', 'copy', out_path]
-                else:
-                    bitrate = main_audio_bitrate if actual_audio_idx == 0 else commentary_audio_bitrate
-                    audio_args += ['-map', '0:a:{}'.format(ai), '-c:a', 'ac3',
-                                   '-b:a', bitrate, out_path]
+                ext = audio_ext(codec)
+                track_exts.append(ext)
+                out_path = os.path.join(encode_dir, '{}_audio_{}{}'.format(clip, actual_audio_idx, ext))
+                audio_args += ['-map', '0:a:{}'.format(ai), '-c:a', 'copy']
+                if codec in ('truehd',):
+                    audio_args += ['-f', 'truehd']
+                audio_args += [out_path]
                 actual_audio_idx += 1
-            first_audio = os.path.join(encode_dir, '{}_audio_0.ac3'.format(clip))
+            first_audio = os.path.join(encode_dir, '{}_audio_0{}'.format(clip, track_exts[0])) if track_exts else None
             if actual_audio_idx > 0 and run_ff(audio_args, out_file=first_audio):
                 audio_tracks = actual_audio_idx
-                # Verify all expected tracks exist (resume safety: catch partial/missing tracks on re-run)
                 for ai in range(actual_audio_idx):
-                    if not os.path.isfile(os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, ai))):
+                    ext = track_exts[ai]
+                    if not os.path.isfile(os.path.join(encode_dir, '{}_audio_{}{}'.format(clip, ai, ext))):
                         audio_tracks = 0
                         break
 
@@ -2135,6 +2178,43 @@ log "  Encoding complete."
 
 log "Phase 5: Rebuilding BD structure..."
 
+# ── Audio passthrough helpers ──────────────────────────────────────────────
+# Count audio tracks for a clip (handles multiple codec extensions)
+count_audio() {
+    local clip=$1 count=0
+    while true; do
+        local found=false
+        for ext in ac3 eac3 dts thd wav; do
+            [[ -f "$ENCODE_DIR/${clip}_audio_${count}.${ext}" ]] && found=true && break
+        done
+        $found || break
+        ((++count))
+    done
+    echo $count
+}
+
+# Find audio file for clip + index; returns 0=found, 1=missing
+find_audio() {
+    local clip=$1 idx=$2
+    for ext in ac3 eac3 dts thd wav; do
+        local candidate="$ENCODE_DIR/${clip}_audio_${idx}.${ext}"
+        [[ -f "$candidate" ]] && { echo "$candidate"; return 0; }
+    done
+    return 1
+}
+
+# Map file extension to tsMuxeR audio track type
+audio_tsmuxer_type() {
+    case "${1##*.}" in
+        ac3) echo "A_AC3" ;;
+        eac3) echo "A_EAC3" ;;
+        dts) echo "A_DTS" ;;
+        thd) echo "A_TRUEHD" ;;
+        wav) echo "A_LPCM" ;;
+        *)   echo "A_AC3" ;;
+    esac
+}
+
 DST="$OUTPUT"
 
 if $MOVIE_ONLY; then
@@ -2158,28 +2238,26 @@ if $MOVIE_ONLY; then
         echo "MUXOPT --no-pcr-on-video-pid --new-audio-pes --vbr --blu-ray --custom-chapters=${main_chapters}"
     } > "$META_FILE"
 
-     # Count max audio/subtitle tracks across all clips (builtins only)
-     max_audio=0
-     max_subs=0
-     for clip in $MAIN_CLIPS; do
-         a=0; while [[ -f "$ENCODE_DIR/${clip}_audio_${a}.ac3" ]]; do ((++a)); done
-         ((a > max_audio)) && max_audio=$a
-         s=0
-         while [[ -f "$ENCODE_DIR/${clip}_sub_${s}.sup" || -f "$ENCODE_DIR/${clip}_sub_${s}.srt" ]]; do ((++s)); done
-         ((s > max_subs)) && max_subs=$s
-     done
-     
-     # Warn if clips have differing track counts (seamless branching edge case)
-     clip_count=0
-     for clip in $MAIN_CLIPS; do ((++clip_count)); done
-     if [[ $clip_count -gt 1 ]]; then
-         audio_mismatch=false sub_mismatch=false
-         for clip in $MAIN_CLIPS; do
-             a=0; while [[ -f "$ENCODE_DIR/${clip}_audio_${a}.ac3" ]]; do ((++a)); done
-             [[ $a -ne $max_audio ]] && audio_mismatch=true
-             s=0; while [[ -f "$ENCODE_DIR/${clip}_sub_${s}.sup" || -f "$ENCODE_DIR/${clip}_sub_${s}.srt" ]]; do ((++s)); done
-             [[ $s -ne $max_subs ]] && sub_mismatch=true
-         done
+      # Count max audio/subtitle tracks across all clips (builtins only)
+      max_audio=0
+      max_subs=0
+      for clip in $MAIN_CLIPS; do
+          a=$(count_audio "$clip"); ((a > max_audio)) && max_audio=$a
+          s=0
+          while [[ -f "$ENCODE_DIR/${clip}_sub_${s}.sup" || -f "$ENCODE_DIR/${clip}_sub_${s}.srt" ]]; do ((++s)); done
+          ((s > max_subs)) && max_subs=$s
+      done
+      
+      # Warn if clips have differing track counts (seamless branching edge case)
+      clip_count=0
+      for clip in $MAIN_CLIPS; do ((++clip_count)); done
+      if [[ $clip_count -gt 1 ]]; then
+          audio_mismatch=false sub_mismatch=false
+          for clip in $MAIN_CLIPS; do
+              a=$(count_audio "$clip"); [[ $a -ne $max_audio ]] && audio_mismatch=true
+              s=0; while [[ -f "$ENCODE_DIR/${clip}_sub_${s}.sup" || -f "$ENCODE_DIR/${clip}_sub_${s}.srt" ]]; do ((++s)); done
+              [[ $s -ne $max_subs ]] && sub_mismatch=true
+          done
          if $audio_mismatch || $sub_mismatch; then
              warn "Multi-clip title with track count mismatches detected (seamless branching)"
              warn "  Some clips may have gaps in audio/subtitle tracks — test playback carefully"
@@ -2206,12 +2284,12 @@ if $MOVIE_ONLY; then
     for ((aidx = 0; aidx < max_audio; aidx++)); do
         first=true
         for clip in $MAIN_CLIPS; do
-            af="$ENCODE_DIR/${clip}_audio_${aidx}.ac3"
-            [[ -f "$af" ]] || continue
+            af=$(find_audio "$clip" "$aidx") || continue
+            atype=$(audio_tsmuxer_type "$af")
             if $first; then
-                echo "A_AC3, \"$af\"" >> "$META_FILE"
+                echo "${atype}, \"$af\"" >> "$META_FILE"
             else
-                echo "+A_AC3, \"$af\"" >> "$META_FILE"
+                echo "+${atype}, \"$af\"" >> "$META_FILE"
             fi
             first=false
         done
@@ -2294,10 +2372,10 @@ else
         [[ -f "$encode_dir/${cid}_video.$VIDEO_EXT" ]] || continue
         [[ -f "$DST/BDMV/STREAM/${cid}.m2ts" ]] && continue
         ((++encoded_count))
-        fps=${CLIP_FPS[$cid]:-24000/1001}
+        fps=${CLIP_FPS[$cid]:-23.976}
 
         # Count audio / subtitle tracks in encoded output
-        a=0; while [[ -f "$encode_dir/${cid}_audio_${a}.ac3" ]]; do ((++a)); done
+        a=$(count_audio "$cid")
         s=0; while [[ -f "$encode_dir/${cid}_sub_${s}.sup" ]]; do ((++s)); done
 
         # Build tsMuxeR meta file (builtins only)
@@ -2307,8 +2385,10 @@ else
             echo "MUXOPT --no-pcr-on-video-pid --new-audio-pes --vbr --blu-ray"
             echo "$MUX_VIDEO_TYPE, \"$encode_dir/${cid}_video.$VIDEO_EXT\"${TRACK_ARG}, fps=$fps, insertSEI, contSPS"
             aidx=0
-            while [[ -f "$encode_dir/${cid}_audio_${aidx}.ac3" ]]; do
-                echo "A_AC3, \"$encode_dir/${cid}_audio_${aidx}.ac3\""
+            while true; do
+                af=$(find_audio "$cid" "$aidx") || break
+                atype=$(audio_tsmuxer_type "$af")
+                echo "${atype}, \"$af\""
                 ((++aidx))
             done
             sidx=0
