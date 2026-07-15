@@ -10,6 +10,7 @@ EXTRAS_SCALE="1280:720"
 EXTRAS_AUDIO_BITRATE="128k"
 EXTRAS_CRF=22
 MAIN_PRESET="slow"
+MAIN_PASSES=2
 OVERHEAD_MB=200
 DRY_RUN=false
 FORCE=false
@@ -132,6 +133,7 @@ Options:
   --extras-ab BITRATE    Extras audio bitrate (default: 128k)
   --extras-crf NUM       Extras CRF value (default: 22)
   --main-preset NAME     x264 preset for main movie (default: slow)
+  --main-passes NUM       Number of VBR passes for main movie (1 or 2, default: 2)
   --main-audio BITRATE   Main movie audio re-encode bitrate (default: 640k)
   --commentary-ab BITRATE Commentary/secondary audio bitrate (default: 128k)
   --movie-only           Movie-only backup (no menus, no extras, fresh BD author)
@@ -341,15 +343,35 @@ run_tui() {
             CODEC="h264"
         fi
 
-        # ── Encoding options ──
-        local preset_default="$MAIN_PRESET"
+        # ── Encoding speed ──
+        local speed_profile="Quality (slow, 2-pass)"
+        if [[ "$MAIN_PRESET" == "medium" ]] && [[ "$MAIN_PASSES" == 1 ]]; then
+            speed_profile="Fast (medium, 1-pass)"
+        elif [[ "$MAIN_PRESET" == "fast" ]] && [[ "$MAIN_PASSES" == 1 ]]; then
+            speed_profile="Quick (fast, 1-pass)"
+        elif [[ "$MAIN_PRESET" == "slower" ]] && [[ "$MAIN_PASSES" == 2 ]]; then
+            speed_profile="Max Quality (slower, 2-pass)"
+        elif [[ "$MAIN_PRESET" == "veryslow" ]] && [[ "$MAIN_PASSES" == 2 ]]; then
+            speed_profile="Extreme (veryslow, 2-pass)"
+        fi
 
-        local preset_choice=$(printf '%s\n' \
-                "slow" "medium" "fast" "slower" "veryslow" \
+        local speed_choice=$(print -l \
+                "Quality (slow, 2-pass)" \
+                "Fast (medium, 1-pass)" \
+                "Quick (fast, 1-pass)" \
+                "Max Quality (slower, 2-pass)" \
+                "Extreme (veryslow, 2-pass)" \
             | gum choose --limit=1 --height=5 \
-                --header="ENCODING PRESET" --selected="$preset_default" || true)
-        if [[ -n "$preset_choice" ]]; then
-            MAIN_PRESET="$preset_choice"
+                --header="ENCODING SPEED" --selected="$speed_profile" || true)
+
+        if [[ -n "$speed_choice" ]]; then
+            case "$speed_choice" in
+                *Quality*) MAIN_PRESET="slow"; MAIN_PASSES=2 ;;
+                *Fast*)    MAIN_PRESET="medium"; MAIN_PASSES=1 ;;
+                *Quick*)   MAIN_PRESET="fast"; MAIN_PASSES=1 ;;
+                *Max*)     MAIN_PRESET="slower"; MAIN_PASSES=2 ;;
+                *Extreme*) MAIN_PRESET="veryslow"; MAIN_PASSES=2 ;;
+            esac
         fi
 
         # ── Additional options ──
@@ -396,7 +418,7 @@ run_tui() {
             "${CCTP_SUBTEXT1}  Output:${CCTP_RESET}      ${CCTP_TEXT}${OUTPUT}${CCTP_RESET}" \
             "${CCTP_SUBTEXT1}  Movie-only:${CCTP_RESET}  ${c_movie}${MOVIE_ONLY}${CCTP_RESET}" \
             "${CCTP_SUBTEXT1}  Format:${CCTP_RESET}      ${CCTP_TEXT}${iso_label}${CCTP_RESET}" \
-            "${CCTP_SUBTEXT1}  Preset:${CCTP_RESET}      ${CCTP_TEXT}${MAIN_PRESET}${CCTP_RESET}"
+            "${CCTP_SUBTEXT1}  Speed:${CCTP_RESET}       ${CCTP_TEXT}${MAIN_PRESET}, ${MAIN_PASSES}-pass${CCTP_RESET}"
 
         local action=$(gum choose --height=5 \
             --header="SELECT ACTION" \
@@ -636,6 +658,7 @@ while [[ $# -gt 0 ]]; do
         --extras-ab)       EXTRAS_AUDIO_BITRATE="$2"; shift 2 ;;
         --extras-crf)      EXTRAS_CRF="$2"; shift 2 ;;
         --main-preset)     MAIN_PRESET="$2"; shift 2 ;;
+        --main-passes)     MAIN_PASSES="$2"; shift 2 ;;
         --main-audio)      MAIN_AUDIO_BITRATE="$2"; shift 2 ;;
         --commentary-ab)   COMMENTARY_AUDIO_BITRATE="$2"; shift 2 ;;
         --movie-only)      MOVIE_ONLY=true; shift ;;
@@ -669,6 +692,7 @@ done
 
 # Validate audio bitrate arguments
 [[ "$MAIN_AUDIO_BITRATE" =~ ^[0-9]+k?$ ]] || die "Invalid --main-audio $MAIN_AUDIO_BITRATE — use format: 640k or 640"
+[[ "$MAIN_PASSES" == 1 || "$MAIN_PASSES" == 2 ]] || die "Invalid --main-passes $MAIN_PASSES — must be 1 or 2"
 [[ "$EXTRAS_AUDIO_BITRATE" =~ ^[0-9]+k?$ ]] || die "Invalid --extras-ab $EXTRAS_AUDIO_BITRATE — use format: 128k or 128"
 [[ "$COMMENTARY_AUDIO_BITRATE" =~ ^[0-9]+k?$ ]] || die "Invalid --commentary-ab $COMMENTARY_AUDIO_BITRATE — use format: 128k or 128"
 
@@ -1705,11 +1729,11 @@ if [[ -n "$MAIN_CLIPS" ]]; then
     log "Encoding main movie..."
     # Trim trailing newline from clip list
     MAIN_CLIPS="${MAIN_CLIPS%$'\n'}"
-    log "  Bitrate: $(python3 -c "print(round(${MAIN_BITRATE}/1000000,2))") Mbps, preset: $MAIN_PRESET"
+    log "  Bitrate: $(python3 -c "print(round(${MAIN_BITRATE}/1000000,2))") Mbps, preset: $MAIN_PRESET, ${MAIN_PASSES}-pass VBR"
 fi
 
 # Run ALL encoding in a single Python process.
-python3 -u - "$SOURCE" "$MKV_INPUT" "$ENCODE_DIR" "$WORK_DIR" "$CLIPS_DIR" "$INVENTORY_FILE" "$BD_X264_OPTS" "$MAIN_PRESET" "$MAIN_BITRATE" "$MAIN_MAXRATE" "$MAIN_BUFSIZE" "$MAIN_AUDIO_BITRATE" "$COMMENTARY_AUDIO_BITRATE" "$EXTRAS_AUDIO_BITRATE" "$EXTRAS_CRF" "$EXTRAS_SCALE" "$EXTRAS_CLIPS" "$MAIN_CLIPS" "$NO_EXTRAS" "$MOVIE_ONLY" "$CODEC" "$NICE" << 'PYEOF'
+python3 -u - "$SOURCE" "$MKV_INPUT" "$ENCODE_DIR" "$WORK_DIR" "$CLIPS_DIR" "$INVENTORY_FILE" "$BD_X264_OPTS" "$MAIN_PRESET" "$MAIN_BITRATE" "$MAIN_MAXRATE" "$MAIN_BUFSIZE" "$MAIN_AUDIO_BITRATE" "$COMMENTARY_AUDIO_BITRATE" "$EXTRAS_AUDIO_BITRATE" "$EXTRAS_CRF" "$EXTRAS_SCALE" "$EXTRAS_CLIPS" "$MAIN_CLIPS" "$NO_EXTRAS" "$MOVIE_ONLY" "$CODEC" "$NICE" "$MAIN_PASSES" << 'PYEOF'
 import glob, json, os, subprocess, sys
 
 _source = sys.argv[1]
@@ -1736,6 +1760,7 @@ no_extras = sys.argv[19] == 'true'
 movie_only = sys.argv[20] == 'true'
 codec = sys.argv[21]
 nice = int(sys.argv[22])
+main_passes = int(sys.argv[23])
 enc_lib = 'libx265' if codec == 'hevc' else 'libx264'
 video_ext = 'hevc' if codec == 'hevc' else 'h264'
 pass_prefix = 'x265' if codec == 'hevc' else 'x264'
@@ -1988,84 +2013,120 @@ if main_clips:
         if audio_tracks == 0:
             sys.stderr.write('  (video-only)\n')
 
-        # Pass 1
-        # Helper to detect passlog for any encoder (x264 uses -0.log, x265 may vary)
-        def passlog_exists():
-            return bool(glob.glob(pass_log + '*'))
-        
-        # Clean orphaned passlogs
-        for f in glob.glob(pass_log + '*'):
-            try: os.remove(f)
-            except: pass
-        
-        sys.stderr.write('    Pass 1/2...\n')
-        for attempt in range(3):
-            cmd = ['ffmpeg', '-y', '-v', 'error', '-stats', '-i', src,
-                   '-map', '0:v:0', '-c:v', enc_lib, '-preset', main_preset,
-                   '-b:v', main_bitrate]
-            if not is_hevc:
-                cmd += ['-x264opts', 'bluray-compat=1']
-            cmd += ['-pass', '1', '-passlogfile', pass_log,
-                    '-an', '-f', 'null', '/dev/null']
-            cmd = apply_nice(cmd)
-            try:
-                r = subprocess.run(cmd, timeout=None, capture_output=False)
-                if r.returncode == 0:
-                    break
-            except:
-                pass
-            if passlog_exists():
-                break  # stats file exists = pass 1 actually finished
-            sys.stderr.write('  Pass 1 attempt {} failed - retrying\n'.format(attempt + 1))
-        
-        if not passlog_exists():
-            sys.stderr.write('  Pass 1 failed - skipping\n')
-            continue
+        if main_passes == 1:
+            # Single-pass VBR
+            sys.stderr.write('    Single pass...\n')
+            pass_ok = False
+            for attempt in range(3):
+                cmd = ['ffmpeg', '-y', '-v', 'error', '-stats', '-i', src,
+                       '-map', '0:v:0', '-c:v', enc_lib, '-preset', main_preset,
+                       '-b:v', main_bitrate, '-maxrate', main_maxrate, '-bufsize', main_bufsize]
+                if not is_hevc:
+                    cmd += ['-x264opts', 'bluray-compat=1']
+                cmd += ['-an', out_video]
+                cmd = apply_nice(cmd)
+                try:
+                    r = subprocess.run(cmd, timeout=None, capture_output=False)
+                    if r.returncode == 0:
+                        pass_ok = True
+                        break
+                    if r.returncode < 0 and os.path.isfile(out_video) and os.path.getsize(out_video) > 0:
+                        pass_ok = True
+                        break
+                except:
+                    if os.path.isfile(out_video) and os.path.getsize(out_video) > 0:
+                        pass_ok = True
+                        break
+                sys.stderr.write('  Single pass attempt {} failed - retrying\n'.format(attempt + 1))
+                for f in glob.glob(out_video + '*'):
+                    try: os.remove(f)
+                    except: pass
 
-        # Pass 2
-        pass2_ok = False
-        sys.stderr.write('    Pass 2/2...\n')
-        for attempt in range(3):
-            cmd = ['ffmpeg', '-y', '-v', 'error', '-stats', '-i', src,
-                   '-map', '0:v:0', '-c:v', enc_lib, '-preset', main_preset,
-                   '-b:v', main_bitrate, '-maxrate', main_maxrate, '-bufsize', main_bufsize]
-            if not is_hevc:
-                cmd += ['-x264opts', 'bluray-compat=1']
-            cmd += ['-pass', '2', '-passlogfile', pass_log,
-                    '-an', out_video]
-            cmd = apply_nice(cmd)
-            try:
-                r = subprocess.run(cmd, timeout=None, capture_output=False)
-                if r.returncode == 0:
-                    pass2_ok = True
-                    break
-                # Negative returncode = killed by signal (partial output may be usable)
-                if r.returncode < 0 and os.path.isfile(out_video) and os.path.getsize(out_video) > 0:
-                    pass2_ok = True
-                    break
-            except:
-                # subprocess.run itself failed (e.g. shell crash); partial output may be usable
-                if os.path.isfile(out_video) and os.path.getsize(out_video) > 0:
-                    pass2_ok = True
-                    break
-            sys.stderr.write('  Pass 2 attempt {} failed - retrying\n'.format(attempt + 1))
-            for f in glob.glob(pass_log + '*'):
-                try: os.remove(f)
-                except: pass
-
-        if pass2_ok:
-            sys.stderr.write('    done ({} audio, {} subtitle)\n'.format(audio_tracks, sub_tracks))
-            for f in glob.glob(pass_log + '*'):
-                try: os.remove(f)
-                except: pass
+            if pass_ok:
+                sys.stderr.write('    done ({} audio, {} subtitle)\n'.format(audio_tracks, sub_tracks))
+            else:
+                sys.stderr.write('  Single pass failed\n')
+                continue
         else:
-            sys.stderr.write('  Pass 2 failed\n')
+            # Two-pass VBR
+
+            # Helper to detect passlog for any encoder (x264 uses -0.log, x265 may vary)
+            def passlog_exists():
+                return bool(glob.glob(pass_log + '*'))
+
+            # Clean orphaned passlogs
             for f in glob.glob(pass_log + '*'):
                 try: os.remove(f)
                 except: pass
-            if os.path.isfile(out_video):
-                try: os.remove(out_video)
-                except: pass
+
+            sys.stderr.write('    Pass 1/2...\n')
+            for attempt in range(3):
+                cmd = ['ffmpeg', '-y', '-v', 'error', '-stats', '-i', src,
+                       '-map', '0:v:0', '-c:v', enc_lib, '-preset', main_preset,
+                       '-b:v', main_bitrate]
+                if not is_hevc:
+                    cmd += ['-x264opts', 'bluray-compat=1']
+                cmd += ['-pass', '1', '-passlogfile', pass_log,
+                        '-an', '-f', 'null', '/dev/null']
+                cmd = apply_nice(cmd)
+                try:
+                    r = subprocess.run(cmd, timeout=None, capture_output=False)
+                    if r.returncode == 0:
+                        break
+                except:
+                    pass
+                if passlog_exists():
+                    break  # stats file exists = pass 1 actually finished
+                sys.stderr.write('  Pass 1 attempt {} failed - retrying\n'.format(attempt + 1))
+
+            if not passlog_exists():
+                sys.stderr.write('  Pass 1 failed - skipping\n')
+                continue
+
+            # Pass 2
+            pass2_ok = False
+            sys.stderr.write('    Pass 2/2...\n')
+            for attempt in range(3):
+                cmd = ['ffmpeg', '-y', '-v', 'error', '-stats', '-i', src,
+                       '-map', '0:v:0', '-c:v', enc_lib, '-preset', main_preset,
+                       '-b:v', main_bitrate, '-maxrate', main_maxrate, '-bufsize', main_bufsize]
+                if not is_hevc:
+                    cmd += ['-x264opts', 'bluray-compat=1']
+                cmd += ['-pass', '2', '-passlogfile', pass_log,
+                        '-an', out_video]
+                cmd = apply_nice(cmd)
+                try:
+                    r = subprocess.run(cmd, timeout=None, capture_output=False)
+                    if r.returncode == 0:
+                        pass2_ok = True
+                        break
+                    # Negative returncode = killed by signal (partial output may be usable)
+                    if r.returncode < 0 and os.path.isfile(out_video) and os.path.getsize(out_video) > 0:
+                        pass2_ok = True
+                        break
+                except:
+                    # subprocess.run itself failed (e.g. shell crash); partial output may be usable
+                    if os.path.isfile(out_video) and os.path.getsize(out_video) > 0:
+                        pass2_ok = True
+                        break
+                sys.stderr.write('  Pass 2 attempt {} failed - retrying\n'.format(attempt + 1))
+                for f in glob.glob(pass_log + '*'):
+                    try: os.remove(f)
+                    except: pass
+
+            if pass2_ok:
+                sys.stderr.write('    done ({} audio, {} subtitle)\n'.format(audio_tracks, sub_tracks))
+                for f in glob.glob(pass_log + '*'):
+                    try: os.remove(f)
+                    except: pass
+            else:
+                sys.stderr.write('  Pass 2 failed\n')
+                for f in glob.glob(pass_log + '*'):
+                    try: os.remove(f)
+                    except: pass
+                if os.path.isfile(out_video):
+                    try: os.remove(out_video)
+                    except: pass
 
 PYEOF
 log "  Encoding complete."

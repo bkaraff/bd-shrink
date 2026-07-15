@@ -48,7 +48,7 @@ Phases:
 1. **Inventory** — parse `.mpls`, probe `.m2ts` via ffprobe → `inventory.json`
 2. **Classify** — largest HD playlist(s) = main movie; rest = extras/menus → `classify.json`
 3. **Budget** — target bitrate for main movie after accounting for menus + estimated extras → `budget.json`
-4. **Encode** — extras at 720p CRF; main movie two-pass VBR
+4. **Encode** — extras at 720p CRF; main movie single-pass or two-pass VBR depending on speed profile
 5. **Rebuild** — surgical (replace M2TS in place, keep menus) or fresh `tsMuxeR` authoring (`--movie-only`)
 6. **Validate** — file/CLPI checks
 
@@ -72,6 +72,7 @@ Phases:
 - `-f` is checked **before** dry-run exit — needed even with `-n` if output exists
 - `--iso` creates an ISO; `--burn --iso` also creates one and then burns from it
 - `--nice` with no argument defaults to `N=19`; valid range 0–19. Applied via `systemd-run --property=Nice` for the bash `run_ff` and `nice -n` for encoder subprocesses inside the Phase 4 Python process.
+- `MAIN_PASSES` controls single- vs two-pass encoding. Set to `1` via `--main-passes 1` for faster encode (matches BD-Rebuilder's "Very Fast" mode). Default is `2` (quality).
 
 ## Burn path
 
@@ -131,7 +132,17 @@ Mirrored to a log file in `/var/log/bd-shrink` if writable, otherwise `~/.local/
 
 ## TUI mode
 
-Auto-launched when `-s`/`-o` are omitted (requires `gum`). Source selection retries if the chosen folder contains no BDMV or video file, rather than dying.
+Auto-launched when `-s`/`-o` are omitted (requires `gum`). The TUI runs in a loop so any step can be revisited from the summary:
+
+1. **Source** — fuzzy-filter contents of saved `SOURCE_ROOT`, or browse filesystem. Auto-detects BDMV (`index.bdmv`, `BDMV/index.bdmv`, `*/BDMV/index.bdmv`), video files (`.mkv`/`.m2ts`/`.ts`), or ISO files.
+2. **Output** — text input with sensible default based on source name.
+3. **Mode** — radio choice: *Full disc (keep menus, extras)* or *Movie-only (no menus, fresh BD)*.
+4. **Output format** — radio choice: *Folder (BDMV)* or *ISO (.iso file)*.
+5. **Encoding speed** — radio choice combining x264 preset + pass count: *Quality (slow, 2-pass)* (default), *Fast (medium, 1-pass)*, *Quick (fast, 1-pass)*, *Max Quality (slower, 2-pass)*, or *Extreme (veryslow, 2-pass)*.
+6. **Overwrite** — checkbox shown only if output dir already exists.
+7. **Summary** — colorized box with all choices, then action chooser: Start / Edit source / Edit output / Edit options / Cancel.
+
+`SOURCE_ROOT` is persisted to `~/.config/bd-shrink/source_root`. Canceling any radio selection preserves the previous value. Pre-selection matches current state.
 
 ## Gotchas
 
