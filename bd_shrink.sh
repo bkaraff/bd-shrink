@@ -10,6 +10,7 @@ EXTRAS_SCALE="1280:720"
 EXTRAS_AUDIO_BITRATE="128k"
 EXTRAS_CRF=22
 MAIN_PRESET="slow"
+MAIN_AUDIO_BITRATE="640k"
 MAIN_PASSES=2
 OVERHEAD_MB=200
 DRY_RUN=false
@@ -17,7 +18,6 @@ FORCE=false
 KEEP_ONE=false
 MOVIE_ONLY=false
 OUTPUT_ISO=false
-COMMENTARY_AUDIO_BITRATE="128k"
 USE_TUI=false
 INSTALL_DEPS=false
 BURN=false
@@ -644,7 +644,6 @@ burn_output() {
 SOURCE=""
 OUTPUT=""
 WORK_DIR=""
-MAIN_AUDIO_BITRATE="640k"
 NO_EXTRAS=false
 
 while [[ $# -gt 0 ]]; do
@@ -687,8 +686,9 @@ done
 # Validate codec
 [[ "$CODEC" =~ ^(h264|hevc)$ ]] || die "Invalid --codec $CODEC — use h264 or hevc"
 
-# Validate target GB
+# Validate target GB (must be at least 1 GB to avoid nonsensical budgets)
 [[ "$TARGET_GB" =~ ^[0-9]+$ ]] || die "Invalid --target $TARGET_GB — must be a positive integer (GB)"
+[[ "$TARGET_GB" -ge 1 ]] || die "Invalid --target $TARGET_GB — must be at least 1 GB"
 
 # Validate audio bitrate arguments
 [[ "$MAIN_AUDIO_BITRATE" =~ ^[0-9]+k?$ ]] || die "Invalid --main-audio $MAIN_AUDIO_BITRATE — use format: 640k or 640"
@@ -699,6 +699,20 @@ done
 # Validate nice value
 [[ "$NICE" =~ ^[0-9]+$ ]] || die "Invalid --nice value $NICE — must be a non-negative integer"
 [[ "$NICE" -le 19 ]] || die "Invalid --nice value $NICE — must be 0-19"
+
+# Validate override playlist names (comma-separated 5-digit decimal names, .mpls optional)
+for override_list in "$OVERRIDE_MAIN_PLAYLISTS" "$OVERRIDE_EXTRAS" "$OVERRIDE_NOT_EXTRAS" "$OVERRIDE_MENUS"; do
+    if [[ -n "$override_list" ]]; then
+        for pl_name in $(echo "$override_list" | tr ',' '\n'); do
+            [[ "$pl_name" =~ ^[0-9]{5}(\.mpls)?$ ]] || die "Invalid playlist name: $pl_name — must be 5 decimal digits, optionally with .mpls (e.g., 00000 or 00000.mpls)"
+        done
+    fi
+done
+
+# Validate burn speed
+if [[ -n "$BURN_SPEED" ]]; then
+    [[ "$BURN_SPEED" =~ ^[0-9]+$ ]] || die "Invalid --burn-speed $BURN_SPEED — must be a positive integer"
+fi
 
 # --install-deps: show dependency info and exit (no source/output required)
 if $INSTALL_DEPS; then
@@ -1559,6 +1573,12 @@ print(f"  Main available:    {b['main_available_mb']} MB")
 print(f"  Main bitrate:      {b['main_bitrate_mbps']} Mbps")
 print(f"  Main duration:     {b['main_duration_str']}")
 PYEOF
+
+# Warn if available space is negative (menus + extras exceed target)
+if (( $(python3 -c "import json; b=json.load(open('$BUDGET_FILE')); print(b['available_bytes'])") < 0 )); then
+    warn "Available space is negative: menus + estimated extras exceed target GB."
+    warn "Output may exceed the target size. Consider a larger target (--target) or --no-extras."
+fi
 
 if $DRY_RUN; then
     log "Dry run complete. Summary above."
