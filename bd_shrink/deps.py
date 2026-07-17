@@ -3,7 +3,6 @@
 import shutil
 from typing import Optional
 
-
 REQUIRED_TOOLS = {
     "ffmpeg": "Video encoding",
     "ffprobe": "Stream probing",

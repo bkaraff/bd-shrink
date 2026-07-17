@@ -3,6 +3,7 @@
 import pytest
 
 from bd_shrink.budget import (
+    apply_bitrate_to_config,
     calculate_budget,
     estimate_audio_size,
     estimate_subtitle_size,
@@ -447,3 +448,35 @@ class TestBudgetCalculation:
         
         for key in required_keys:
             assert key in budget
+
+
+class TestApplyBitrateToConfig:
+    """Test apply_bitrate_to_config populates ffmpeg-ready strings."""
+
+    def test_populates_bitrate_fields(self):
+        from bd_shrink.config import Config
+
+        config = Config(source="x", output="y")
+        assert config.main_bitrate == ""
+
+        apply_bitrate_to_config(config, 8000)
+
+        assert config.main_bitrate == "8000k"
+        assert config.main_maxrate == "8000k"
+        assert config.main_bufsize == "16000k"
+
+    def test_floors_at_one_kbps(self):
+        from bd_shrink.config import Config
+
+        config = Config(source="x", output="y")
+        apply_bitrate_to_config(config, 0)
+        assert config.main_bitrate == "1k"
+        assert config.main_bufsize == "2k"
+
+    def test_bitrate_from_budget_result(self):
+        """Full path: budget kbps flows into config strings."""
+        from bd_shrink.config import Config
+
+        config = Config(source="x", output="y")
+        apply_bitrate_to_config(config, 12345)
+        assert config.main_bitrate == "12345k"

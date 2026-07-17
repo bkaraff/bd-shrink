@@ -1,7 +1,6 @@
 """Command-line interface: argparse and validation."""
 
 import argparse
-import sys
 from typing import Optional
 
 from bd_shrink import __version__

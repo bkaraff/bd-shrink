@@ -19,6 +19,12 @@ class Config:
     main_preset: str = "slow"  # x264/x265 preset
     main_passes: int = 2  # 1 or 2 pass encoding
 
+    # Main-movie bitrate settings (populated from BudgetResult before encoding).
+    # Stored as ffmpeg-ready strings (e.g. "8000k"). Empty until budget phase runs.
+    main_bitrate: str = ""
+    main_maxrate: str = ""
+    main_bufsize: str = ""
+
     # Extras
     extras_scale: str = "1280:720"
     extras_crf: int = 22

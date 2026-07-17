@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
 
-from bd_shrink.mpls import MPLSPlaylist, parse_mpls
+from bd_shrink.mpls import parse_mpls
 
 
 @dataclass

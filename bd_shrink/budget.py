@@ -210,3 +210,20 @@ def calculate_budget(
         "target_gb": target_gb,
         "overhead_mb": overhead_mb,
     }
+
+
+def apply_bitrate_to_config(config, main_bitrate_kbps: int) -> None:
+    """Populate config.main_bitrate/maxrate/bufsize from the budgeted kbps.
+
+    ffmpeg needs bitrate/maxrate/bufsize as strings (e.g. "8000k"). maxrate is
+    set to the target bitrate (constrained VBR to stay within the disc budget);
+    bufsize is 2x the bitrate, a standard VBV buffer for Blu-ray-compatible VBR.
+
+    Args:
+        config: Config object to mutate
+        main_bitrate_kbps: target main-movie bitrate in kbps from calculate_budget
+    """
+    kbps = max(int(main_bitrate_kbps), 1)
+    config.main_bitrate = f"{kbps}k"
+    config.main_maxrate = f"{kbps}k"
+    config.main_bufsize = f"{kbps * 2}k"
