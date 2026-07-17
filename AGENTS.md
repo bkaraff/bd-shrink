@@ -404,6 +404,27 @@ python -m bd_shrink -s /path/to/BDMV -o /output -f --movie-only
 - **UDF 2.00 only**: some older BD players may not support; fallback is no UDF (ISO 9660 only, not recommended for BD)
 - **No cross-platform support**: Linux only (bash shim, systemd-run, genisoimage)
 
+## Test Encode & Release Checkpoint (v0.3.0)
+
+All 10 code review bugs fixed; ready for real-world validation. After test encodes complete, three decision points:
+
+### 1. Pre-release polish (choose one or both)
+- **Option A**: Fix `mpls.py` F841 linter warnings (pre-existing, out of scope) so CI passes cleanly on `ruff check`
+- **Option B**: Polish error messages and user-facing docs for better UX during failures
+- **Option C**: Both A and B
+- **Option D**: Neither; acceptable to merge with pre-existing F841 warnings (low priority)
+
+### 2. Release timing
+- **Option A**: Merge `dev-next` → `main` and tag v0.3.0 immediately after successful test encodes
+- **Option B**: Wait for additional review/testing cycle before release
+- **Option C**: Release as v0.3.0-rc1 (release candidate) for broader beta testing first
+
+### 3. Post-release roadmap (v0.4.0+)
+- **High priority**: Parallel encoding (multi-clip batches via `multiprocessing`)
+- **Medium priority**: Better error recovery (ffmpeg retry logic, fallback codecs)
+- **Medium priority**: Windows/macOS support (rewrite `systemd-run` wrapper)
+- **Nice-to-have**: Web UI (FastAPI + React), streaming output to TUI, performance profiling
+
 ## Future improvements (v0.4.0+)
 
 - **Windows/macOS support**: rewrite `systemd-run` wrapper to use subprocess directly or platform-specific process isolation
