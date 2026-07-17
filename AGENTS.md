@@ -179,3 +179,66 @@ Auto-launched when `-s`/`-o` are omitted (requires `gum`). The TUI runs in a loo
 - **Budget read tolerance (C1)** — reads are now `|| true` to prevent early exit on truncated `.budget_values.txt`
 - **Clip count reporting (C4)** — fixed zero-clip count display (was showing "1" for empty input)
 - **ISO temp cleanup** — ISO mount points created in `/tmp` and cleaned up on exit (even on error)
+- **Audio passthrough (b070cf7)** — switched from AC-3 re-encode to stream-copy for all non-MPEG audio (DTS, TrueHD, LPCM, E-AC-3). Original codecs preserved; budget estimates from source bitrates with codec fallback table; removes transcoding quality loss and codec-conversion bugs.
+- **Quick wins (79d09a8)** — input validation floor on `--target` (≥1 GB); playlist override regex corrected to decimal-only (BDMV spec); negative budget warning; audio-bitrate defaults consolidated.
+
+## Planned Rewrite — v0.3.0: Python Package
+
+The current single-file bash+heredocs architecture (v0.2.x) is functional but increasingly difficult to maintain and test. The plan is to rewrite as a self-contained Python package (`python -m bd_shrink`), eliminating inter-process dotfile glue by passing objects in memory, and adding comprehensive pytest coverage.
+
+### Why now?
+- **Audio passthrough landed (b070cf7)** — eliminated re-encoding but left behind dead audio-bitrate parameters (`--main-audio`, `--commentary-ab`, `--extras-ab`) threaded through multiple heredocs. Evidence of fragmentation the rewrite cleanly resolves.
+- **Code review revealed 43% is already Python** — 12 heredocs (~1,137 lines), all cleanly parameterized via argv/files with no bash interpolation. Extraction is mechanical.
+- **Test demand**: classification and budget logic are pure functions ideal for pytest fixtures over JSON, but can't be tested without hardware (Blu-ray disc + ffmpeg). Python extraction unlocks this.
+
+### Package structure (`bd_shrink/`)
+```
+__init__.py __main__.py       # entrypoint: python -m bd_shrink
+cli.py config.py              # argparse + validation; audio-bitrate flags removed
+logging_setup.py runner.py    # logging; systemd-run --user --wait via subprocess
+deps.py audio.py              # --install-deps; codec→ext map, bitrate fallback table
+mpls.py inventory.py          # MPLS binary parser + ffprobe orchestration
+classify.py budget.py         # classification heuristics + space/bitrate math
+encode.py rebuild.py          # encode loop (passthrough audio) + tsMuxeR authoring
+validate.py iso.py            # file/CLPI checks; ISO mount/extract/burn
+tui.py                        # questionary + rich (replaces gum)
+```
+
+### Locked decisions
+- **In-memory pipeline**: phases pass dicts/dataclasses; JSON checkpoints kept for resume/debug. All `.work/.*.txt` dotfiles removed.
+- **Audio passthrough**: `-c:a copy` baseline; per-codec extensions (`.ac3/.eac3/.dts/.thd/.wav`); budget estimates from source `bit_rate` with fallback table (`dts=1509k, truehd=2000k, eac3=1536k, pcm_bluray=4608k`, else codec-specific defaults); MPEG audio (mp2/mp3) skipped.
+- **Dead audio-bitrate flags removed**: `--main-audio`, `--commentary-ab`, `--extras-ab` had no effect since b070cf7; dropped entirely from CLI.
+- **TUI**: rewritten in `questionary` + `rich` (no gum dependency).
+- **systemd-run**: kept; called via `subprocess` from `runner.py`.
+- **Resumability**: encode still skips clips with existing outputs in `ENCODE_DIR`.
+- **Back-compat**: `bd_shrink.sh` becomes a 3-line shim (`exec python3 -m bd_shrink "$@"`).
+
+### Test coverage (pytest over JSON fixtures)
+- `test_audio.py`: codec→ext, ext→tsMuxeR type, bitrate fallbacks, MPEG skip.
+- `test_budget.py`: audio size from source bit_rate; B9 shared-clip dedup; negative-budget warning; target floor (≥1 GB).
+- `test_classify.py`: single-main / alternate-cut / menu-heavy / extras-only splits; alternate-cut window; extras floor; duplicate-clip dedup.
+- `test_mpls.py`: MPLS parser over checked-in synthetic `.mpls` (PlayList_type, chapter marks, SubPath clips).
+- `test_cli.py`: arg validation (target ≥1, decimal-only playlist regex, codec, nice range, no audio-bitrate flags).
+- No Blu-ray disc or ffmpeg needed for unit tests.
+
+### CI (`.github/workflows/ci.yml`)
+`ruff check` + `ruff format --check` → `py_compile` → `pytest` → `shellcheck bd_shrink.sh` (the shim).
+
+### Execution phases (CI green at each)
+1. **Scaffold** — pyproject.toml, package skeleton, CI workflow, shim.
+2. **CLI + config + deps** — port arg parsing/validation (audio-bitrate flags gone). `test_cli.py`.
+3. **audio.py** — codec/ext/type maps + fallback table + count/find helpers. `test_audio.py`.
+4. **Pipeline core** — mpls/inventory/classify/budget with in-memory objects. `test_mpls/classify/budget.py`.
+5. **Orchestration** — runner/encode/rebuild/validate/iso (encode near-verbatim port first, refactor after tests pass).
+6. **TUI** — questionary + rich implementation.
+7. **Docs** — README/AGENTS rewrite for Python architecture; note the shim.
+
+### Risks & mitigations
+- **Encode-loop parity** (highest risk): 400+ line heredoc with retry/resume/passlog logic and passthrough audio. Mitigation: near-verbatim port, keep identical ffmpeg command construction, refactor only after tests pass.
+- **Audio-codec matrix**: fallback bitrate table must match b070cf7 exactly. Mitigation: covered by `test_audio.py` + `test_budget.py` fixtures.
+- **TUI regression**: ~400 lines of working gum code rewritten in questionary/rich. Mitigation: manual smoke-test of source detection (BDMV / nested / video / ISO), radios, `SOURCE_ROOT` persistence.
+- **`.work` resume compatibility**: layout changes could break in-flight jobs. Mitigation: keep checkpoint JSON names identical; only remove ephemeral `.*.txt`.
+- **No hardware CI**: can't burn/mux in GitHub. Mitigation: pure-logic tests only; muxing/burning stays manually validated as today.
+
+### Branch: `dev-next`
+This rewrite is in progress on branch `dev-next`. Main (`main`) stays on v0.2.x for stability until the rewrite reaches feature parity and is merged.
