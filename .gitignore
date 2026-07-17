@@ -8,6 +8,14 @@ x264_*.log
 /test-output/
 /work/
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.coverage
+
 # OS files
 .DS_Store
 Thumbs.db
