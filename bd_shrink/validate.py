@@ -61,10 +61,15 @@ def validate_clpi_file(clpi_path: str, logger: Optional[logging.Logger] = None) 
         if not os.path.isfile(clpi_path) or os.path.getsize(clpi_path) == 0:
             return False
 
-        # Check CLPI magic bytes: "CLPI0000" (8 bytes)
+        # Check CLPI magic bytes: real files start with "HDMV" or "CLPI"
+        # followed by version "0100" or "0200" (8 bytes total).
         with open(clpi_path, "rb") as f:
             magic = f.read(8)
-            if magic != b"CLPI0000":
+            if len(magic) < 8:
+                return False
+            if magic[:4] not in (b"HDMV", b"CLPI"):
+                return False
+            if magic[4:] not in (b"0100", b"0200"):
                 return False
 
         return True

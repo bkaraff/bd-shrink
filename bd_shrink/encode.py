@@ -21,7 +21,6 @@ from bd_shrink.audio import (
     should_skip,
     subtitle_ext,
     subtitle_format,
-    tsmuxer_type,
 )
 from bd_shrink.config import Config
 from bd_shrink.inventory import Clip, Inventory
@@ -48,7 +47,7 @@ def skip_if_exists(out_file: Optional[str] = None, pass_log_base: Optional[str] 
         pass_log_base: Base path for pass log files (glob for *, e.g., /path/to/log)
 
     Returns:
-        True if output exists and is non-empty
+        True if output exists and is non-empty (or pass logs exist for two-pass)
     """
     if out_file and os.path.isfile(out_file) and os.path.getsize(out_file) > 0:
         return True
@@ -160,8 +159,14 @@ def extract_audio(
         result = run_managed(codec_args, logger=logger)
         if result.succeeded and os.path.isfile(out_path) and os.path.getsize(out_path) > 0:
             actual_audio_idx += 1
-        elif logger:
-            logger.warning(f"Audio track {ai} ({codec}) extraction failed for {clip.clip_id}")
+        else:
+            if logger:
+                logger.warning(f"Audio track {ai} ({codec}) extraction failed for {clip.clip_id}")
+            try:
+                if os.path.isfile(out_path):
+                    os.remove(out_path)
+            except OSError:
+                pass
 
     if actual_audio_idx == 0:
         return 0, []

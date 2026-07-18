@@ -67,7 +67,7 @@ bd_shrink/
 ├── inventory.py                  # ffprobe orchestration, Clip/Inventory dataclasses
 ├── classify.py                   # playlist heuristics (menu detection, clip dedup)
 ├── budget.py                     # audio/subtitle size estimation, bitrate math
-├── encode.py                     # 400+ line encode loop (audio extraction, video encoding, resumability)
+├── encode.py                     # 700+ line encode loop (audio extraction, video encoding, resumability)
 ├── rebuild.py                    # tsMuxeR metafile generation (movie-only + surgical modes)
 ├── validate.py                   # BDMV structure + M2TS/CLPI file validation
 ├── iso.py                        # ISO creation (genisoimage UDF), BD-R burning (growisofs)
@@ -85,7 +85,7 @@ All phases pass in-memory objects (Clip, Inventory, ClassifyResult, BudgetResult
 
 2. **Classify** (classify.py)
    - Identify main movie playlist(s): largest HD resolution, longest duration
-   - Mark menus: `PlayList_type == 1`, playlists sharing clips with menus, short clips (<120s, no chapters)
+   - Mark menus: `PlayList_type == 1`, short clips (<120s, no chapters)
    - Extras: everything else re-encoded to 720p
    - **B9 fix**: dedup shared clips across playlists; main duration = sum of unique encoded clips
    - Output: `ClassifyResult` dataclass with main/menu/extra clip sets
@@ -102,7 +102,6 @@ All phases pass in-memory objects (Clip, Inventory, ClassifyResult, BudgetResult
      - Extras: 720p CRF (constant quality)
      - Main: single-pass or two-pass VBR depending on `--main-passes` flag (default 2)
    - **Resumability**: skip clips with existing outputs; retry up to 3 times on failure
-   - **Pass 2 validation**: check raw output (`.h264`/`.hevc`) for NAL start code; remove corrupt files
    - All external-tool subprocesses run via `runner.run_managed()`, which wraps
      them in `systemd-run --user --wait` when available (crash-surviving
      transient service + `--nice`) and falls back to a direct subprocess in
@@ -110,12 +109,12 @@ All phases pass in-memory objects (Clip, Inventory, ClassifyResult, BudgetResult
 
 5. **Rebuild** (rebuild.py)
    - **Movie-only mode**: generate fresh `tsMuxeR` metafile for one main-movie playlist
-   - **Surgical mode**: preserve menus and structure; remux re-encoded clips in place, copy menu clips verbatim
+   - **Surgical mode**: preserve menus and structure; remux re-encoded clips in place, copy menu/extra/orphan clips verbatim
    - **Orphan-clip safety**: after playlist-referenced copies, scan `SOURCE/STREAM/*.m2ts` and copy any unreferenced files
    - Output: BDMV folder with updated playlists + clips
 
 6. **Validate** (validate.py)
-   - Check BDMV structure: required dirs (`AUXDATA`, `BACKUP`, `CLIPINF`, `JAR`, `PLAYLIST`, `STREAM`, `AUXDATA`, `CERTIFICATE`)
+   - Check BDMV structure: required dirs (`BDMV/STREAM`, `BDMV/CLIPINF`, `BDMV/PLAYLIST` + `BDMV/index.bdmv`)
    - Validate M2TS/CLPI magic bytes (`0x47` for M2TS, `0x00` for CLPI)
    - Check output size against target GB; warn if over
    - Output: `ValidationResult` with pass/fail + warnings
@@ -175,34 +174,36 @@ Do **not** delete the `.work` directory or use `-f` when resuming.
   - `2` = default quality (two-pass VBR)
 - `--codec h264|hevc`: H.264 (default) or HEVC; tsMuxeR must support codec for output
 - `--target N`: target size in GB (≥1 GB floor); e.g., `--target 25` for BD25
-- `--main-preset preset`: x264/x265 preset for main movie (default: `medium`)
+- `--main-preset preset`: x264/x265 preset for main movie (default: `slow`)
 
 ## Audio passthrough
 
-All non-MPEG audio is stream-copied (`-c:a copy`) to preserve original codecs and avoid transcoding quality loss:
+All non-MPEG audio is preserved without transcoding quality loss:
 
-- **Supported codecs**: DTS, TrueHD, E-AC-3, LPCM, PCM Blu-ray, AC-3
+- **Stream-copied codecs**: DTS, TrueHD, E-AC-3, AC-3 (`-c:a copy`)
+- **Transcoded**: Blu-ray PCM (`pcm_bluray`) → decoded to `pcm_s24le` and stored in `.w64` (Wave64) because `pcm_bluray` cannot be written directly to WAV/W64
 - **Skipped**: MPEG audio (mp2, mp3) due to BDMV spec constraints
 - **Extension mapping** (for extraction):
   - `.ac3` → AC-3
   - `.eac3` → E-AC-3
   - `.dts` → DTS
   - `.thd` → TrueHD
-  - `.wav` → LPCM / PCM Blu-ray
+  - `.wav` → LPCM variants
+  - `.w64` → PCM Blu-ray
 - **Bitrate estimation** (budget phase):
   - Uses source `bit_rate` from ffprobe
   - Fallback table: `dts=1509k, truehd=2000k, eac3=1536k, pcm_bluray=4608k`
   - MPEG audio skipped entirely (no budget allocation)
+- **Per-track extraction**: each audio track is extracted in a separate ffmpeg command so a failure on one track does not cascade to the others
 
 **Dead flags removed** (no effect since v0.2.x b070cf7): `--main-audio`, `--commentary-ab`, `--extras-ab` are gone from CLI.
 
 ## Menu preservation (surgical mode)
 
-Menu clips are excluded from re-encoding via three signals:
+Menu clips are excluded from re-encoding via two signals:
 
 1. `PlayList_type == 1` read from MPLS `AppInfoPlayList` struct
-2. Any playlist sharing a clip with a known menu playlist
-3. Zero chapter marks + duration < 120 s (warnings, logos, transitions)
+2. Short clips (<120 s) that are low-resolution or have no video
 
 Their clips are copied verbatim so IGS (Interactive Graphics) overlays stay intact. Anything else classified as an extra is re-encoded to 720p.
 
@@ -212,7 +213,7 @@ The MPLS parser extracts `SubPlayItem` clips from SubPath entries (not just main
 
 ### Orphan-clip safety net
 
-After copying all playlist-referenced clips, the surgical rebuild does a final pass over `SOURCE/STREAM/*.m2ts` and copies any file not already in the output. This catches clips that exist on the disc but are referenced by navigation structures outside MPLS (e.g., `MovieObject.bdmv` FirstPlayback/TopMenu entries).
+After copying all playlist-referenced clips, the surgical rebuild does a final pass over `SOURCE/STREAM/*.m2ts` and copies any file not already in the output. This catches clips that exist on the disc but are referenced by navigation structures outside MPLS (e.g., `MovieObject.bdmv` FirstPlayback/TopMenu entries). Skipped when `--no-extras` is used.
 
 ### B9 fix (unique clip deduplication)
 
@@ -267,10 +268,13 @@ Default: `${OUTPUT}.work` (sibling of output). Configurable via `-w / --work`. W
 ### `.work` layout
 
 - `inventory.json` — Inventory checkpoint (Clip + PlaylistMetadata dicts)
-- `classify.json` — ClassifyResult checkpoint (main/menu/extra clip sets)
+- `classify.json` — Classification checkpoint (main/extras/menu playlists)
 - `budget.json` — BudgetResult checkpoint (bitrates + sizes)
+- `encode.json` — Encode stats checkpoint
+- `rebuild.json` — Rebuild stats checkpoint
+- `validate.json` — Validation result checkpoint
 - `encode/` — Output video/audio/subtitle files during encoding phase
-- `bdmv_output/` — Temporary BDMV folder during rebuild phase
+- `rebuild/` — tsMuxeR meta files and per-clip temporary output during rebuild phase
 - `bd_shrink.log` — Local copy of run log (main log mirrors to `/var/log/bd-shrink` or `~/.local/share/bd-shrink/logs`)
 
 ## Logging
@@ -388,7 +392,7 @@ The old bash script (`bd_shrink.sh` in `main`) is archived for reference. Key de
 - **No heredocs**: Python code is now in proper modules, not embedded shell strings
 - **No dotfiles**: data flows as objects; JSON checkpoints are optional (for resume/debug)
 - **Type safety**: dataclasses replace string parsing
-- **Test coverage**: 291 tests vs. zero in v0.2.x
+- **Test coverage**: 302 tests vs. zero in v0.2.x
 - **Audio flags gone**: `--main-audio`, `--commentary-ab`, `--extras-ab` removed (dead since b070cf7)
 
 ### Resuming interrupted runs
@@ -412,22 +416,25 @@ python -m bd_shrink -s /path/to/BDMV -o /output -f --movie-only
 
 ## Test Encode & Release Checkpoint (v0.3.0)
 
-All 10 code review bugs fixed; `__main__.py` orchestrator wired end-to-end; CI green (ruff check + format, 291 tests passing). Real-world test encode in progress against Red.Beard.1965.1080p.Blu-ray.AVC.DTS-HD.MA.5.1-ApheX (46GB BD50, 19 clips, 12 playlists, 185 min). 
+All 10 code review bugs fixed; `__main__.py` orchestrator wired end-to-end; CI green (ruff check + format, 302 tests passing). Real-world test encode in progress against Red.Beard.1965.1080p.Blu-ray.AVC.DTS-HD.MA.5.1-ApheX (46GB BD50, 19 clips, 12 playlists, 185 min). 
 
 ### Test encode progress (2026-07-17)
 - **MPLS parser fixes**: PlayItem length field excludes itself (spec-correct), 45kHz timestamps, error-resilient ASCII/decode, corrupt playlist skip in inventory
 - **Subtitle extraction fix**: Was using `audio_ext()` + `tsmuxer_type()` → `.ac3`/`A_AC3`; now uses `subtitle_ext()`/`subtitle_format()` → `.sup`/`sup`
-- **pcm_bluray audio fix**: Not stream-copyable; added `AUDIO_TRANSCODE` dict mapping to `pcm_s24be` with `.w64` extension and `-f w64` format
+- **pcm_bluray audio fix**: Not stream-copyable; added `AUDIO_TRANSCODE` dict mapping to `pcm_s24le` with `.w64` extension and `-f w64` format
 - **Audio extraction per-track**: Changed from single ffmpeg multi-output command to individual per-track commands; cascading failure from one track no longer breaks all tracks
-- **0-byte audio files**: `find_audio_file()` and `count_audio_in_clip()` now skip files with `getsize() == 0` so tsMuxeR doesn't crash
+- **0-byte audio files**: `find_audio_file()` and `count_audio_in_clip()` now skip files with `getsize() == 0` so tsMuxeR doesn't crash; failed extractions delete their partial output
+- **Orphan-clip safety net**: Implemented in surgical rebuild; copies unreferenced source clips after the wanted clips, skipped when `--no-extras` is used
+- **tsMuxeR output renaming**: tsMuxeR always emits `00000.m2ts`/`00000.clpi` for single-clip Blu-ray output; rebuild now detects and renames them to the correct clip_id
+- **CLPI validation fix**: Real CLPI files start with `HDMV0200` (or `CLPI`/`HDMV` + `0100`/`0200`); the old `CLPI0000` check caused every CLPI to appear corrupted
 - **`--threads N`**: New CLI flag to limit ffmpeg CPU threads (applied to all 3 encode paths when >0)
 - **encode phase works**: Main clip 00015 (42GB, 185 min) re-encoded to 7.9GB H.264 successfully
-- **rebuild/validate**: tsMuxeR segfaulted due to empty audio files (fixed); CLPI corruption from that crash (should self-heal on re-run)
-- **encode resumable**: Video output files preserved, audio-only re-extraction on resume
+- **rebuild/validate**: tsMuxeR segfaulted due to empty audio files and the output was 45.82GB because remuxed files were never copied into place (root causes fixed)
+- **encode resumable**: Video output files preserved; audio-only re-extraction on resume
 
 ### Remaining
-- Re-run after audio extraction fixes to get clean rebuild + validate through
-- Output was 45.82GB vs 25GB target due to original 40GB clip copied when tsMuxeR failed; should be ~10-12GB with fixed rebuild
+- Re-run after audio extraction/rebuild fixes to get clean rebuild + validate through
+- Output should be close to 25GB target now that the 40GB original clip is correctly replaced by the 7.9GB re-encode
 
 ### Known gaps for v0.3.0
 - ISO image input (.iso) — mount/extract not yet wired; currently rejected with a "not yet supported" error

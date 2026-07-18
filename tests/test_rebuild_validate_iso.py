@@ -155,6 +155,27 @@ class TestValidation:
 
         assert validate_clpi_file(empty_file) is False
 
+    def test_validate_clpi_file_real_header(self, temp_dirs):
+        """Verify validation accepts real HDMV/CLPI 0100/0200 headers."""
+        os.makedirs(temp_dirs["temp"], exist_ok=True)
+        real_file = os.path.join(temp_dirs["temp"], "real.clpi")
+
+        with open(real_file, "wb") as f:
+            f.write(b"HDMV0200")
+            f.write(b"\x00" * 24)
+
+        assert validate_clpi_file(real_file) is True
+
+    def test_validate_clpi_file_bad_header(self, temp_dirs):
+        """Verify validation rejects CLPI with wrong magic bytes."""
+        os.makedirs(temp_dirs["temp"], exist_ok=True)
+        bad_file = os.path.join(temp_dirs["temp"], "bad.clpi")
+
+        with open(bad_file, "wb") as f:
+            f.write(b"CORRUPTED")
+
+        assert validate_clpi_file(bad_file) is False
+
     def test_validate_bdmv_structure_missing_dirs(self, temp_dirs, null_logger):
         """Verify structure validation detects missing directories."""
         os.makedirs(temp_dirs["output"], exist_ok=True)
@@ -412,6 +433,167 @@ class TestSurgicalNoExtras:
         copied_targets = " ".join(" ".join(c) for c in copied)
         assert "00001.m2ts" in copied_targets
         assert "00002.m2ts" in copied_targets  # extra copied when not no_extras
+
+    def test_orphan_clips_copied_when_not_no_extras(self, temp_dirs, null_logger):
+        """With no_extras=False, orphan clips not in MPLS are also copied."""
+        source_dir = os.path.join(temp_dirs["temp"], "src2", "BDMV")
+        os.makedirs(os.path.join(source_dir, "STREAM"), exist_ok=True)
+        os.makedirs(os.path.join(source_dir, "CLIPINF"), exist_ok=True)
+        os.makedirs(os.path.join(source_dir, "PLAYLIST"), exist_ok=True)
+
+        for cid in ("00001", "00002", "00003"):
+            with open(os.path.join(source_dir, "STREAM", f"{cid}.m2ts"), "wb") as f:
+                f.write(b"\x00" * 16)
+            with open(os.path.join(source_dir, "CLIPINF", f"{cid}.clpi"), "wb") as f:
+                f.write(b"\x00" * 16)
+
+        output_dir = temp_dirs["output"]
+        os.makedirs(temp_dirs["encode"], exist_ok=True)
+        os.makedirs(temp_dirs["work"], exist_ok=True)
+
+        with (
+            patch("bd_shrink.rebuild.find_tool", return_value="/usr/bin/tsMuxeR"),
+            patch("bd_shrink.rebuild.run_simple") as mock_simple,
+            patch("bd_shrink.rebuild.run_managed") as mock_managed,
+        ):
+            mock_simple.return_value = MagicMock(succeeded=True)
+            mock_managed.return_value = MagicMock(succeeded=True)
+
+            rebuild_surgical(
+                source_dir=source_dir,
+                encode_dir=temp_dirs["encode"],
+                output_dir=output_dir,
+                work_dir=temp_dirs["work"],
+                main_clips=["00001"],
+                extras_clips=["00002"],
+                config=self._make_config(),
+                clip_fps_map={"00001": "23.976", "00002": "23.976"},
+                no_extras=False,
+                logger=null_logger,
+            )
+
+        copied = [
+            call.args[0]
+            for call in mock_simple.call_args_list
+            if call.args and call.args[0][:1] == ["cp"]
+        ]
+        copied_targets = " ".join(" ".join(c) for c in copied)
+        assert "00001.m2ts" in copied_targets
+        assert "00002.m2ts" in copied_targets
+        assert "00003.m2ts" in copied_targets  # orphan copied when not no_extras
+
+    def test_orphan_clips_skipped_when_no_extras(self, temp_dirs, null_logger):
+        """With no_extras=True, orphan clips are also skipped."""
+        source_dir = os.path.join(temp_dirs["temp"], "src3", "BDMV")
+        os.makedirs(os.path.join(source_dir, "STREAM"), exist_ok=True)
+        os.makedirs(os.path.join(source_dir, "CLIPINF"), exist_ok=True)
+        os.makedirs(os.path.join(source_dir, "PLAYLIST"), exist_ok=True)
+
+        for cid in ("00001", "00003"):
+            with open(os.path.join(source_dir, "STREAM", f"{cid}.m2ts"), "wb") as f:
+                f.write(b"\x00" * 16)
+            with open(os.path.join(source_dir, "CLIPINF", f"{cid}.clpi"), "wb") as f:
+                f.write(b"\x00" * 16)
+
+        output_dir = temp_dirs["output"]
+        os.makedirs(temp_dirs["encode"], exist_ok=True)
+        os.makedirs(temp_dirs["work"], exist_ok=True)
+
+        with (
+            patch("bd_shrink.rebuild.find_tool", return_value="/usr/bin/tsMuxeR"),
+            patch("bd_shrink.rebuild.run_simple") as mock_simple,
+            patch("bd_shrink.rebuild.run_managed") as mock_managed,
+        ):
+            mock_simple.return_value = MagicMock(succeeded=True)
+            mock_managed.return_value = MagicMock(succeeded=True)
+
+            rebuild_surgical(
+                source_dir=source_dir,
+                encode_dir=temp_dirs["encode"],
+                output_dir=output_dir,
+                work_dir=temp_dirs["work"],
+                main_clips=["00001"],
+                extras_clips=["00003"],
+                config=self._make_config(),
+                clip_fps_map={"00001": "23.976", "00003": "23.976"},
+                no_extras=True,
+                logger=null_logger,
+            )
+
+        copied = [
+            call.args[0]
+            for call in mock_simple.call_args_list
+            if call.args and call.args[0][:1] == ["cp"]
+        ]
+        copied_targets = " ".join(" ".join(c) for c in copied)
+        assert "00001.m2ts" in copied_targets
+        assert "00003.m2ts" not in copied_targets  # orphan and extra skipped
+
+    def test_tsmuxer_rename_output(self, temp_dirs, null_logger):
+        """tsMuxeR outputs 00000.m2ts/00000.clpi; rebuild renames to clip_id."""
+        source_dir = os.path.join(temp_dirs["temp"], "src3", "BDMV")
+        os.makedirs(os.path.join(source_dir, "STREAM"), exist_ok=True)
+        os.makedirs(os.path.join(source_dir, "CLIPINF"), exist_ok=True)
+        os.makedirs(os.path.join(source_dir, "PLAYLIST"), exist_ok=True)
+
+        # Only the encoded clip exists in source STREAM
+        with open(os.path.join(source_dir, "STREAM", "00005.m2ts"), "wb") as f:
+            f.write(b"\x00" * 16)
+        with open(os.path.join(source_dir, "CLIPINF", "00005.clpi"), "wb") as f:
+            f.write(b"\x00" * 16)
+
+        output_dir = temp_dirs["output"]
+        encode_dir = temp_dirs["encode"]
+        work_dir = temp_dirs["work"]
+        os.makedirs(encode_dir, exist_ok=True)
+        os.makedirs(work_dir, exist_ok=True)
+
+        # Create a fake encoded video for clip 00005
+        with open(os.path.join(encode_dir, "00005_video.h264"), "wb") as f:
+            f.write(b"h264data")
+
+        def fake_run_managed(cmd, **kwargs):
+            # Simulate tsMuxeR writing 00000.m2ts and 00000.clpi in the requested output dir
+            out = cmd[-1]
+            os.makedirs(os.path.join(out, "BDMV", "STREAM"), exist_ok=True)
+            os.makedirs(os.path.join(out, "BDMV", "CLIPINF"), exist_ok=True)
+            with open(os.path.join(out, "BDMV", "STREAM", "00000.m2ts"), "wb") as f:
+                f.write(b"muxed00005")
+            with open(os.path.join(out, "BDMV", "CLIPINF", "00000.clpi"), "wb") as f:
+                f.write(b"HDMV0200")
+            return MagicMock(succeeded=True)
+
+        def fake_run_simple(cmd, **kwargs):
+            # Just copy manually so the assertion works even if run_simple is mocked
+            if cmd[0] == "cp" and len(cmd) == 3:
+                import shutil
+
+                shutil.copy(cmd[1], cmd[2])
+            return MagicMock(succeeded=True)
+
+        with (
+            patch("bd_shrink.rebuild.find_tool", return_value="/usr/bin/tsMuxeR"),
+            patch("bd_shrink.rebuild.run_simple", side_effect=fake_run_simple),
+            patch("bd_shrink.rebuild.run_managed", side_effect=fake_run_managed),
+        ):
+            rebuild_surgical(
+                source_dir=source_dir,
+                encode_dir=encode_dir,
+                output_dir=output_dir,
+                work_dir=work_dir,
+                main_clips=["00005"],
+                extras_clips=[],
+                config=self._make_config(),
+                clip_fps_map={"00005": "23.976"},
+                no_extras=False,
+                logger=null_logger,
+            )
+
+        assert os.path.isfile(os.path.join(output_dir, "BDMV", "STREAM", "00005.m2ts"))
+        assert os.path.isfile(os.path.join(output_dir, "BDMV", "CLIPINF", "00005.clpi"))
+        # Verify the file was copied from the renamed tsMuxeR output
+        with open(os.path.join(output_dir, "BDMV", "STREAM", "00005.m2ts"), "rb") as f:
+            assert f.read() == b"muxed00005"
 
     def test_tsmuxer_missing_fails_gracefully(self, temp_dirs, null_logger):
         """If tsMuxeR isn't found, rebuild_surgical returns a failed result."""

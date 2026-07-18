@@ -31,13 +31,13 @@ def _create_synthetic_mpls(
     mpls = bytearray()
 
     # === MPLS Header (8 magic + 12 offsets = 20 bytes) ===
-    mpls.extend(b"MPLS")                            # Magic (4 bytes)
-    mpls.extend(b"0200")                            # Version "0200" (4 bytes)
+    mpls.extend(b"MPLS")  # Magic (4 bytes)
+    mpls.extend(b"0200")  # Version "0200" (4 bytes)
 
     playlist_offset = 0x30  # After AppInfoPlayList (at 0x20) + its 14-byte body
     mpls.extend(struct.pack(">I", playlist_offset))  # PlayList start (4 bytes)
-    mpls.extend(struct.pack(">I", 0x80))             # PlayListMark start (4 bytes)
-    mpls.extend(struct.pack(">I", 0))                # ExtensionData (4 bytes)
+    mpls.extend(struct.pack(">I", 0x80))  # PlayListMark start (4 bytes)
+    mpls.extend(struct.pack(">I", 0))  # ExtensionData (4 bytes)
 
     # Pad to 0x20 (AppInfoPlayList starts at offset 32).
     assert len(mpls) == 20
@@ -138,7 +138,7 @@ def _create_sub_item(clip_id: str) -> bytes:
     item.extend(b"\x01")  # ref_to_STC_id
     item.extend(b"\x00")  # reserved
 
-    item.extend(struct.pack(">I", 0))        # IN_time = 0
+    item.extend(struct.pack(">I", 0))  # IN_time = 0
     item.extend(struct.pack(">I", 500 * 45))  # OUT_time = 500ms
 
     return bytes(item)

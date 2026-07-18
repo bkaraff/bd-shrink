@@ -226,6 +226,39 @@ class TestExtractAudio:
             # Should skip run_simple due to resumability
             assert mock_run.call_count <= 1  # May be called for first_audio check
 
+    def test_extract_audio_per_track_resume(self, mock_clip, temp_dirs, null_logger):
+        """Verify per-track resume: missing track is extracted, existing one is skipped."""
+        src_path = os.path.join(temp_dirs["source"], "00000.m2ts")
+        with open(src_path, "w") as f:
+            f.write("dummy")
+
+        # Track 0 already extracted, track 1 missing
+        with open(os.path.join(temp_dirs["encode"], "00000_audio_0.ac3"), "w") as f:
+            f.write("audio0")
+
+        with patch("bd_shrink.encode.run_managed") as mock_run:
+            mock_run.return_value = MagicMock(succeeded=True)
+            tracks, exts = extract_audio(mock_clip, src_path, temp_dirs["encode"], null_logger)
+            # Should extract only the missing track (one call)
+            assert mock_run.call_count == 1
+            # The command should target the second track
+            called_cmd = mock_run.call_args[0][0]
+            assert "0:a:1" in called_cmd
+
+    def test_extract_audio_deletes_partial_on_failure(self, mock_clip, temp_dirs, null_logger):
+        """Verify failed extraction removes partial/0-byte output files."""
+        src_path = os.path.join(temp_dirs["source"], "00000.m2ts")
+        with open(src_path, "w") as f:
+            f.write("dummy")
+
+        with patch("bd_shrink.encode.run_managed") as mock_run:
+            mock_run.return_value = MagicMock(succeeded=False)
+            tracks, exts = extract_audio(mock_clip, src_path, temp_dirs["encode"], null_logger)
+            assert tracks == 0
+            # No partial audio files should be left behind
+            for fname in os.listdir(temp_dirs["encode"]):
+                assert not fname.startswith("00000_audio_")
+
 
 class TestExtractSubtitles:
     """Test subtitle extraction."""

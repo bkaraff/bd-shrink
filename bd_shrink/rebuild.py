@@ -449,8 +449,17 @@ def rebuild_surgical(
 
     # Copy certificates
     cert_src = os.path.join(source_dir, "..", "CERTIFICATE")
+    cert_dst = os.path.join(output_dir, "CERTIFICATE")
     if os.path.isdir(cert_src):
-        run_simple(["cp", "-r", cert_src, os.path.join(output_dir, "CERTIFICATE")], logger=logger)
+        os.makedirs(cert_dst, exist_ok=True)
+        # Copy contents, not the directory itself (avoid CERTIFICATE/CERTIFICATE nesting)
+        for item in os.listdir(cert_src):
+            src_item = os.path.join(cert_src, item)
+            dst_item = os.path.join(cert_dst, item)
+            if os.path.isdir(src_item):
+                run_simple(["cp", "-r", src_item, dst_item], logger=logger)
+            else:
+                run_simple(["cp", src_item, dst_item], logger=logger)
 
     # Remux encoded clips
     rebuild_dir = os.path.join(work_dir, "rebuild")
@@ -481,8 +490,10 @@ def rebuild_surgical(
                 logger.warning(f"Failed to write metafile for {clip_id}")
             continue
 
-        # Create temp output directory
+        # Create temp output directory (clean first to avoid stale outputs)
         tmpout = os.path.join(rebuild_dir, f"{clip_id}_output")
+        if os.path.isdir(tmpout):
+            run_simple(["rm", "-rf", tmpout], logger=logger)
         os.makedirs(tmpout, exist_ok=True)
 
         # Run tsMuxeR
@@ -493,18 +504,37 @@ def rebuild_surgical(
                 logger.warning(f"tsMuxeR failed for {clip_id}")
             continue
 
-        # Copy remuxed output to destination
-        new_m2ts_path = os.path.join(tmpout, "BDMV/STREAM", f"{clip_id}.m2ts")
-        new_clpi_path = os.path.join(tmpout, "BDMV/CLIPINF", f"{clip_id}.clpi")
+        # tsMuxeR always names single-clip Blu-ray output 00000.m2ts/00000.clpi
+        # in tmpout/BDMV/STREAM and tmpout/BDMV/CLIPINF. Find them and rename
+        # to the correct clip_id when copying to destination.
+        stream_dir = os.path.join(tmpout, "BDMV/STREAM")
+        clpi_dir = os.path.join(tmpout, "BDMV/CLIPINF")
+        m2ts_files = (
+            [f for f in os.listdir(stream_dir) if f.endswith(".m2ts")]
+            if os.path.isdir(stream_dir)
+            else []
+        )
+        clpi_files = (
+            [f for f in os.listdir(clpi_dir) if f.endswith(".clpi")]
+            if os.path.isdir(clpi_dir)
+            else []
+        )
 
-        if os.path.isfile(new_m2ts_path) and os.path.isfile(new_clpi_path):
-            dst_m2ts = os.path.join(output_dir, "BDMV/STREAM", f"{clip_id}.m2ts")
-            dst_clpi = os.path.join(output_dir, "BDMV/CLIPINF", f"{clip_id}.clpi")
-            run_simple(["cp", new_m2ts_path, dst_m2ts], logger=logger)
-            run_simple(["cp", new_clpi_path, dst_clpi], logger=logger)
-            remuxed_count += 1
+        if not m2ts_files or not clpi_files:
             if logger:
-                logger.info(f"  done: {clip_id}.m2ts")
+                logger.warning(f"tsMuxeR produced no output for {clip_id}")
+            continue
+
+        new_m2ts_path = os.path.join(stream_dir, m2ts_files[0])
+        new_clpi_path = os.path.join(clpi_dir, clpi_files[0])
+
+        dst_m2ts = os.path.join(output_dir, "BDMV/STREAM", f"{clip_id}.m2ts")
+        dst_clpi = os.path.join(output_dir, "BDMV/CLIPINF", f"{clip_id}.clpi")
+        run_simple(["cp", new_m2ts_path, dst_m2ts], logger=logger)
+        run_simple(["cp", new_clpi_path, dst_clpi], logger=logger)
+        remuxed_count += 1
+        if logger:
+            logger.info(f"  done: {clip_id}.m2ts")
 
     # Copy un-encoded clips verbatim
     copied_count = 0
@@ -539,6 +569,34 @@ def rebuild_surgical(
             if os.path.isfile(src_clpi):
                 run_simple(["cp", src_clpi, dst_clpi], logger=logger)
             copied_count += 1
+
+    # Orphan-clip safety net: copy any source M2TS files not referenced by
+    # the wanted playlists (e.g., menu background videos, TopMenu/MovieObject
+    # targets, seamless-branching leftovers). Players may still reference them.
+    # Skipped when --no-extras is set, since that mode intentionally discards
+    # everything except the main movie.
+    if not no_extras:
+        source_stream = os.path.join(source_dir, "STREAM")
+        if os.path.isdir(source_stream):
+            for m2ts_file in os.listdir(source_stream):
+                if not m2ts_file.endswith(".m2ts"):
+                    continue
+
+                dst = os.path.join(output_dir, "BDMV/STREAM", m2ts_file)
+                if os.path.isfile(dst):
+                    continue  # Already remuxed or copied above
+
+                clip_id = m2ts_file[:-5]
+                src = os.path.join(source_stream, m2ts_file)
+                src_clpi = os.path.join(source_dir, "CLIPINF", f"{clip_id}.clpi")
+                dst_clpi = os.path.join(output_dir, "BDMV/CLIPINF", f"{clip_id}.clpi")
+
+                run_simple(["cp", src, dst], logger=logger)
+                if os.path.isfile(src_clpi):
+                    run_simple(["cp", src_clpi, dst_clpi], logger=logger)
+                copied_count += 1
+                if logger:
+                    logger.debug(f"  copied orphan clip: {m2ts_file}")
 
     # Copy MPLS files
     source_mpls = os.path.join(source_dir, "PLAYLIST")

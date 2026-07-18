@@ -21,7 +21,7 @@ AUDIO_FORMAT_OVERRIDE = {
 
 # Audio codecs that can't be stream-copied — must be transcoded
 AUDIO_TRANSCODE = {
-    "pcm_bluray": "pcm_s24be",
+    "pcm_bluray": "pcm_s24le",
 }
 
 # Map subtitle codec names to file extensions

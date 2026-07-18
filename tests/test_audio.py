@@ -71,6 +71,35 @@ class TestExtensionToTsMuxerType:
         assert audio.tsmuxer_type("dts") == "A_DTS"
         assert audio.tsmuxer_type("truehd") == "A_TRUEHD"
 
+    def test_w64_tsmuxer_type(self):
+        """Verify .w64 maps to A_LPCM."""
+        assert audio.tsmuxer_type(".w64") == "A_LPCM"
+
+
+class TestFormatOverride:
+    """Test AUDIO_FORMAT_OVERRIDE and AUDIO_TRANSCODE maps."""
+
+    def test_pcm_bluray_transcode_little_endian(self):
+        """pcm_bluray must transcode to little-endian PCM for W64 container."""
+        assert audio.AUDIO_TRANSCODE["pcm_bluray"] == "pcm_s24le"
+        assert audio.AUDIO_FORMAT_OVERRIDE["pcm_bluray"] == "w64"
+
+    def test_truehd_format_override(self):
+        """TrueHD needs explicit -f truehd for ffmpeg."""
+        assert audio.AUDIO_FORMAT_OVERRIDE["truehd"] == "truehd"
+
+    def test_w64_only_little_endian(self):
+        """W64/WAV containers reject big-endian PCM; ensure we never pair w64 with s24be."""
+        from bd_shrink.audio import AUDIO_FORMAT_OVERRIDE, AUDIO_TRANSCODE
+
+        for codec, fmt in AUDIO_FORMAT_OVERRIDE.items():
+            if fmt in ("wav", "w64"):
+                transcode_codec = AUDIO_TRANSCODE.get(codec, "")
+                if transcode_codec:
+                    assert transcode_codec.endswith("le"), (
+                        f"{codec}: {fmt} requires little-endian PCM, got {transcode_codec}"
+                    )
+
 
 class TestSkipCodecs:
     """Test MPEG audio skip logic."""
