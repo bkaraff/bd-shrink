@@ -12,6 +12,7 @@ from bd_shrink.runner import find_tool, run_managed, run_simple
 @dataclass
 class ISOResult:
     """Result of ISO creation or burning."""
+
     success: bool
     iso_path: Optional[str]
     burned: bool
@@ -25,19 +26,19 @@ def create_iso(
     nice: int = 0,
 ) -> ISOResult:
     """Create ISO file from BDMV directory.
-    
+
     Args:
         bdmv_dir: Path to BDMV directory (parent of BDMV/)
         iso_path: Path to output ISO file
         nice: CPU niceness for the transient service (0-19)
         logger: Logger instance
-    
+
     Returns:
         ISOResult with success status and ISO path
     """
     if logger:
         logger.info(f"Creating ISO: {iso_path}")
-    
+
     try:
         # Ensure output directory exists
         os.makedirs(os.path.dirname(iso_path) or ".", exist_ok=True)
@@ -61,13 +62,15 @@ def create_iso(
             genisoimage,
             "-udf",
             "-allow-limited-size",
-            "-V", "BDMV",
-            "-o", iso_path,
+            "-V",
+            "BDMV",
+            "-o",
+            iso_path,
             bdmv_dir,
         ]
-        
+
         result = run_managed(cmd, nice=nice, logger=logger)
-        
+
         if result.succeeded and os.path.isfile(iso_path):
             if logger:
                 logger.info(f"ISO created: {iso_path}")
@@ -87,7 +90,7 @@ def create_iso(
                 burned=False,
                 error_message=error_msg,
             )
-    
+
     except Exception as e:
         if logger:
             logger.error(f"Exception during ISO creation: {e}")
@@ -106,19 +109,19 @@ def burn_iso(
     nice: int = 0,
 ) -> ISOResult:
     """Burn ISO to BD-R disc.
-    
+
     Args:
         iso_path: Path to ISO file
         burn_device: Device path (e.g., /dev/sr0)
         nice: CPU niceness for the transient service (0-19)
         logger: Logger instance
-    
+
     Returns:
         ISOResult with success status
     """
     if logger:
         logger.info(f"Burning to {burn_device}...")
-    
+
     if not os.path.isfile(iso_path):
         error_msg = f"ISO file not found: {iso_path}"
         if logger:
@@ -129,7 +132,7 @@ def burn_iso(
             burned=False,
             error_message=error_msg,
         )
-    
+
     try:
         # Resolve full paths (systemd-run has a restricted PATH).
         growisofs = find_tool("growisofs")
@@ -155,11 +158,12 @@ def burn_iso(
         cmd = [
             growisofs,
             "-dvd-compat",
-            "-Z", f"{burn_device}={iso_path}",
+            "-Z",
+            f"{burn_device}={iso_path}",
         ]
-        
+
         result = run_managed(cmd, nice=nice, env=env, logger=logger)
-        
+
         if result.succeeded:
             if logger:
                 logger.info(f"Burn completed successfully to {burn_device}")
@@ -179,7 +183,7 @@ def burn_iso(
                 burned=False,
                 error_message=error_msg,
             )
-    
+
     except Exception as e:
         if logger:
             logger.error(f"Exception during burn: {e}")
@@ -240,13 +244,15 @@ def burn_direct_pipe(
         genisoimage,
         "-udf",
         "-allow-limited-size",
-        "-V", "BDMV",
+        "-V",
+        "BDMV",
         bdmv_dir,
     ]
     grow_cmd = [
         growisofs,
         "-dvd-compat",
-        "-Z", f"{burn_device}=/dev/fd/0",
+        "-Z",
+        f"{burn_device}=/dev/fd/0",
     ]
 
     gen_proc = None
@@ -281,7 +287,9 @@ def burn_direct_pipe(
                 error_message=None,
             )
 
-        error_msg = (grow_err.decode(errors="replace") if grow_err else "").strip() or "growisofs failed"
+        error_msg = (
+            grow_err.decode(errors="replace") if grow_err else ""
+        ).strip() or "growisofs failed"
         if logger:
             logger.error(f"Direct burn failed: {error_msg}")
         return ISOResult(
@@ -314,11 +322,11 @@ def cleanup_iso_mounts(
     logger: Optional[logging.Logger] = None,
 ) -> bool:
     """Clean up temporary ISO mount points.
-    
+
     Args:
         mount_points: List of temporary directories to remove
         logger: Logger instance
-    
+
     Returns:
         True if all cleaned up successfully
     """
@@ -329,12 +337,12 @@ def cleanup_iso_mounts(
                 result = run_simple(["umount", mp], logger=logger)
                 if not result.succeeded:
                     all_ok = False
-            
+
             if os.path.isdir(mp):
                 shutil.rmtree(mp)
         except Exception as e:
             if logger:
                 logger.debug(f"Error cleaning up {mp}: {e}")
             all_ok = False
-    
+
     return all_ok

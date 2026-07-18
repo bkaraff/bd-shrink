@@ -98,17 +98,13 @@ def format_install_deps_output() -> str:
         lines.append("\nMISSING REQUIRED TOOLS (install at least one distribution):\n")
         lines.append("# Fedora / RHEL:")
         for cmd in [
-            INSTALL_COMMANDS["fedora"].get(t)
-            for t in missing
-            if t in INSTALL_COMMANDS["fedora"]
+            INSTALL_COMMANDS["fedora"].get(t) for t in missing if t in INSTALL_COMMANDS["fedora"]
         ]:
             if cmd:
                 lines.append(f"  {cmd}")
         lines.append("\n# Debian / Ubuntu:")
         for cmd in [
-            INSTALL_COMMANDS["debian"].get(t)
-            for t in missing
-            if t in INSTALL_COMMANDS["debian"]
+            INSTALL_COMMANDS["debian"].get(t) for t in missing if t in INSTALL_COMMANDS["debian"]
         ]:
             if cmd:
                 lines.append(f"  {cmd}")

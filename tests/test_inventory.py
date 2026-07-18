@@ -1,8 +1,6 @@
 """Tests for inventory module: clip probing and playlist indexing."""
 
 import json
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -74,7 +72,7 @@ def sample_inventory(sample_clip):
         ],
         subtitles=[],
     )
-    
+
     return Inventory(
         clips={"00000": sample_clip, "00001": clip2},
         playlists={
@@ -220,7 +218,7 @@ class TestInventorySerialization:
         """Verify from_json reconstructs equivalent inventory."""
         json_str = to_json(sample_inventory)
         restored = from_json(json_str)
-        
+
         assert len(restored.clips) == len(sample_inventory.clips)
         assert len(restored.playlists) == len(sample_inventory.playlists)
 
@@ -228,7 +226,7 @@ class TestInventorySerialization:
         """Verify clip fields are preserved through JSON round-trip."""
         json_str = to_json(sample_inventory)
         restored = from_json(json_str)
-        
+
         clip = restored.clips["00000"]
         assert clip.clip_id == "00000"
         assert clip.duration_sec == 3600.0
@@ -240,7 +238,7 @@ class TestInventorySerialization:
         """Verify audio streams survive round-trip."""
         json_str = to_json(sample_inventory)
         restored = from_json(json_str)
-        
+
         clip = restored.clips["00000"]
         assert len(clip.audio) == 2
         assert clip.audio[0].codec_name == "ac3"
@@ -251,7 +249,7 @@ class TestInventorySerialization:
         """Verify clips without subtitles deserialize correctly."""
         json_str = to_json(sample_inventory)
         restored = from_json(json_str)
-        
+
         clip = restored.clips["00001"]
         assert len(clip.subtitles) == 0
 
@@ -259,7 +257,7 @@ class TestInventorySerialization:
         """Verify playlist fields survive round-trip."""
         json_str = to_json(sample_inventory)
         restored = from_json(json_str)
-        
+
         pl = restored.playlists["00000"]
         assert pl.playlist_id == "00000"
         assert pl.playlist_type == 0
@@ -272,7 +270,7 @@ class TestInventorySerialization:
         json1 = to_json(sample_inventory)
         inv2 = from_json(json1)
         json2 = to_json(inv2)
-        
+
         # Should serialize identically
         assert json.loads(json1) == json.loads(json2)
 
@@ -322,7 +320,7 @@ class TestAudioStream:
         """Verify multiple audio tracks with different codecs."""
         audio1 = AudioStream(index=0, codec_name="ac3", bit_rate=640_000, channel_layout="5.1")
         audio2 = AudioStream(index=1, codec_name="dts", bit_rate=1_509_000, channel_layout="5.1")
-        
+
         assert audio1.codec_name != audio2.codec_name
         assert audio1.bit_rate != audio2.bit_rate
 

@@ -18,6 +18,7 @@ from typing import Optional
 @dataclass
 class RunResult:
     """Result of a command execution."""
+
     returncode: int
     stdout: str
     stderr: str
@@ -32,12 +33,12 @@ def run_ff(
     logger: Optional[logging.Logger] = None,
 ) -> RunResult:
     """Execute command via systemd-run --user --wait with optional niceness.
-    
+
     All ffmpeg/ffprobe/tsMuxeR commands run through this to ensure:
     - Transient systemd service survives shell crashes
     - CPU niceness applied (default 0, max 19)
     - Logging to stderr/stdout captured
-    
+
     Args:
         cmd: Command list (e.g., ['ffmpeg', '-i', 'input.m2ts', ...])
         nice: CPU niceness (0-19, higher = lower priority)
@@ -46,17 +47,17 @@ def run_ff(
              (e.g., {"MKISOFS": "/usr/bin/genisoimage"}). Passed via
              systemd-run --setenv so the transient service sees them.
         logger: Logger instance (optional)
-    
+
     Returns:
         RunResult with returncode, stdout, stderr, succeeded flag
-    
+
     Raises:
         FileNotFoundError: if systemd-run not found
         ValueError: if nice is out of range
     """
     if not 0 <= nice <= 19:
         raise ValueError(f"nice must be 0-19, got {nice}")
-    
+
     # Build systemd-run wrapper
     systemd_cmd = [
         "systemd-run",
@@ -72,12 +73,12 @@ def run_ff(
             systemd_cmd.append(f"--setenv={key}={value}")
 
     full_cmd = systemd_cmd + cmd
-    
+
     if logger:
         logger.debug(f"Running: {' '.join(full_cmd)}")
         if description:
             logger.info(f"{description}")
-    
+
     try:
         result = subprocess.run(
             full_cmd,
@@ -85,9 +86,9 @@ def run_ff(
             text=True,
             check=False,
         )
-        
+
         succeeded = result.returncode == 0
-        
+
         if logger:
             if succeeded:
                 logger.info("Command succeeded (exit code 0)")
@@ -95,14 +96,14 @@ def run_ff(
                 logger.warning(f"Command failed with exit code {result.returncode}")
                 if result.stderr:
                     logger.error(f"stderr: {result.stderr[:500]}")
-        
+
         return RunResult(
             returncode=result.returncode,
             stdout=result.stdout,
             stderr=result.stderr,
             succeeded=succeeded,
         )
-    
+
     except FileNotFoundError as e:
         if "systemd-run" in str(e):
             raise FileNotFoundError(
@@ -117,21 +118,21 @@ def run_simple(
     logger: Optional[logging.Logger] = None,
 ) -> RunResult:
     """Execute command directly without systemd-run (for simple tasks).
-    
+
     Used for non-critical tasks (dependency checks, etc.) that don't need
     transient service protection.
-    
+
     Args:
         cmd: Command list
         cwd: Working directory (optional)
         logger: Logger instance (optional)
-    
+
     Returns:
         RunResult with returncode, stdout, stderr, succeeded flag
     """
     if logger:
         logger.debug(f"Running (no systemd): {' '.join(cmd)}")
-    
+
     try:
         result = subprocess.run(
             cmd,
@@ -140,19 +141,19 @@ def run_simple(
             check=False,
             cwd=cwd,
         )
-        
+
         succeeded = result.returncode == 0
-        
+
         if logger and not succeeded:
             logger.warning(f"Command failed with exit code {result.returncode}")
-        
+
         return RunResult(
             returncode=result.returncode,
             stdout=result.stdout,
             stderr=result.stderr,
             succeeded=succeeded,
         )
-    
+
     except FileNotFoundError:
         if logger:
             logger.error(f"Command not found: {cmd[0]}")
@@ -163,7 +164,7 @@ def run_simple(
             stderr=f"Command not found: {cmd[0]}",
             succeeded=False,
         )
-    
+
     except Exception as e:
         if logger:
             logger.error(f"Error running command: {e}")
@@ -271,7 +272,9 @@ def _run_simple_with_env(
     except FileNotFoundError:
         if logger:
             logger.error(f"Command not found: {cmd[0]}")
-        return RunResult(returncode=127, stdout="", stderr=f"Command not found: {cmd[0]}", succeeded=False)
+        return RunResult(
+            returncode=127, stdout="", stderr=f"Command not found: {cmd[0]}", succeeded=False
+        )
     except Exception as e:
         if logger:
             logger.error(f"Error running command: {e}")
@@ -280,11 +283,11 @@ def _run_simple_with_env(
 
 def check_returncode(result: RunResult, expected: int = 0) -> bool:
     """Check if command succeeded with expected return code.
-    
+
     Args:
         result: RunResult from run_ff or run_simple
         expected: Expected return code (default 0)
-    
+
     Returns:
         True if returncode matches expected
     """

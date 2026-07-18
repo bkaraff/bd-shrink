@@ -92,9 +92,9 @@ class TestAudioSizeEstimation:
             },
             playlists={},
         )
-        
+
         size = estimate_audio_size(inventory, ["00000"], is_main=False)
-        
+
         # 3600 seconds * 640,000 bits/sec / 8 = 288,000,000 bytes = ~274 MB
         expected = 3600 * 640_000 // 8
         assert size == expected
@@ -105,9 +105,9 @@ class TestAudioSizeEstimation:
             clips={"00000": main_movie_clip},
             playlists={},
         )
-        
+
         size = estimate_audio_size(inventory, ["00000"], is_main=True)
-        
+
         # AC-3: 7200 * 640,000 / 8
         # DTS: 7200 * 1_509_000 / 8
         # Total: 7200 * (640_000 + 1_509_000) / 8
@@ -131,9 +131,9 @@ class TestAudioSizeEstimation:
             },
             playlists={},
         )
-        
+
         size = estimate_audio_size(inventory, ["00000"], is_main=False)
-        
+
         # Only AC-3 counted
         expected = 3600 * 640_000 // 8
         assert size == expected
@@ -154,9 +154,9 @@ class TestAudioSizeEstimation:
             },
             playlists={},
         )
-        
+
         size = estimate_audio_size(inventory, ["00000"], is_main=False)
-        
+
         # Should use DTS fallback (1509 kbps)
         expected = 3600 * 1_509_000 // 8
         assert size == expected
@@ -187,9 +187,9 @@ class TestSubtitleSizeEstimation:
             },
             playlists={},
         )
-        
+
         size = estimate_subtitle_size(inventory, ["00000"])
-        
+
         # 3600 seconds * 50,000 bits/sec / 8 = 22,500,000 bytes
         expected = 3600 * 50_000 // 8
         assert size == expected
@@ -210,9 +210,9 @@ class TestSubtitleSizeEstimation:
             },
             playlists={},
         )
-        
+
         size = estimate_subtitle_size(inventory, ["00000"])
-        
+
         # 3600 seconds * 10,000 bits/sec / 8
         expected = 3600 * 10_000 // 8
         assert size == expected
@@ -234,9 +234,9 @@ class TestSubtitleSizeEstimation:
             },
             playlists={},
         )
-        
+
         size = estimate_subtitle_size(inventory, ["00000"])
-        
+
         # 2 tracks * 3600 * 50,000 / 8
         expected = 2 * 3600 * 50_000 // 8
         assert size == expected
@@ -259,7 +259,7 @@ class TestBudgetCalculation:
                 )
             },
         )
-        
+
         budget = calculate_budget(
             inventory,
             main_playlist_ids=["00000"],
@@ -268,15 +268,13 @@ class TestBudgetCalculation:
             target_gb=23.0,
             overhead_mb=200.0,
         )
-        
+
         assert budget["main_duration_sec"] == 7200.0
         assert budget["main_bitrate_kbps"] > 0
         assert budget["target_gb"] == 23.0
         assert budget["overhead_mb"] == 200.0
 
-    def test_calculate_budget_main_and_extras(
-        self, main_movie_clip, extras_clip
-    ):
+    def test_calculate_budget_main_and_extras(self, main_movie_clip, extras_clip):
         """Verify budget with extras."""
         inventory = Inventory(
             clips={"00000": main_movie_clip, "00001": extras_clip},
@@ -297,7 +295,7 @@ class TestBudgetCalculation:
                 ),
             },
         )
-        
+
         budget = calculate_budget(
             inventory,
             main_playlist_ids=["00000"],
@@ -305,13 +303,11 @@ class TestBudgetCalculation:
             menu_playlist_ids=[],
             target_gb=23.0,
         )
-        
+
         assert budget["main_duration_sec"] == 7200.0
         assert budget["main_bitrate_kbps"] > 0
 
-    def test_calculate_budget_deduplicates_seamless_branching(
-        self, main_movie_clip
-    ):
+    def test_calculate_budget_deduplicates_seamless_branching(self, main_movie_clip):
         """Verify seamless branching (shared clips) are deduplicated."""
         inventory = Inventory(
             clips={"00000": main_movie_clip},
@@ -332,14 +328,14 @@ class TestBudgetCalculation:
                 ),
             },
         )
-        
+
         budget = calculate_budget(
             inventory,
             main_playlist_ids=["00000", "00001"],
             extras_playlist_ids=[],
             menu_playlist_ids=[],
         )
-        
+
         # Duration should count unique clip only once
         assert budget["main_duration_sec"] == 7200.0
         assert budget["main_clip_count"] == 1
@@ -358,7 +354,7 @@ class TestBudgetCalculation:
                 )
             },
         )
-        
+
         budget_bd25 = calculate_budget(
             inventory,
             main_playlist_ids=["00000"],
@@ -366,7 +362,7 @@ class TestBudgetCalculation:
             menu_playlist_ids=[],
             target_gb=23.0,
         )
-        
+
         budget_bd50 = calculate_budget(
             inventory,
             main_playlist_ids=["00000"],
@@ -374,13 +370,11 @@ class TestBudgetCalculation:
             menu_playlist_ids=[],
             target_gb=46.0,
         )
-        
+
         # Larger target = higher bitrate
         assert budget_bd50["main_bitrate_kbps"] > budget_bd25["main_bitrate_kbps"]
 
-    def test_calculate_budget_with_menus(
-        self, main_movie_clip, menu_clip
-    ):
+    def test_calculate_budget_with_menus(self, main_movie_clip, menu_clip):
         """Verify budget accounts for menus."""
         inventory = Inventory(
             clips={"00000": main_movie_clip, "90000": menu_clip},
@@ -401,7 +395,7 @@ class TestBudgetCalculation:
                 ),
             },
         )
-        
+
         budget = calculate_budget(
             inventory,
             main_playlist_ids=["00000"],
@@ -409,7 +403,7 @@ class TestBudgetCalculation:
             menu_playlist_ids=["90000"],
             target_gb=23.0,
         )
-        
+
         assert budget["main_bitrate_kbps"] > 0
 
     def test_calculate_budget_returns_dict_keys(self, main_movie_clip):
@@ -426,14 +420,14 @@ class TestBudgetCalculation:
                 )
             },
         )
-        
+
         budget = calculate_budget(
             inventory,
             main_playlist_ids=["00000"],
             extras_playlist_ids=[],
             menu_playlist_ids=[],
         )
-        
+
         required_keys = [
             "main_duration_sec",
             "main_clip_count",
@@ -445,7 +439,7 @@ class TestBudgetCalculation:
             "target_gb",
             "overhead_mb",
         ]
-        
+
         for key in required_keys:
             assert key in budget
 

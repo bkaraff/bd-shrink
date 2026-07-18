@@ -47,6 +47,7 @@ class Config:
     force: bool = False
     clean_work: bool = False
     nice: int = 0
+    threads: int = 0
     use_tui: bool = False
     install_deps: bool = False
 

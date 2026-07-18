@@ -29,7 +29,7 @@ class TestCodecToExtension:
 
     def test_pcm_bluray_extension(self):
         """Verify PCM Blu-ray maps to .wav."""
-        assert audio.audio_ext("pcm_bluray") == ".wav"
+        assert audio.audio_ext("pcm_bluray") == ".w64"
 
     def test_pcm_variants_extension(self):
         """Verify PCM variants map to .wav."""
@@ -205,10 +205,10 @@ class TestFindAudio:
         with tempfile.TemporaryDirectory() as tmpdir:
             open(os.path.join(tmpdir, "00000_audio_0.ac3"), "w").close()
             open(os.path.join(tmpdir, "00000_audio_1.dts"), "w").close()
-            
+
             path0 = audio.find_audio(tmpdir, "00000", 0)
             assert "audio_0.ac3" in path0
-            
+
             path1 = audio.find_audio(tmpdir, "00000", 1)
             assert "audio_1.dts" in path1
 
@@ -258,11 +258,11 @@ class TestGetAudioTracksFromClipData:
     def test_audio_tracks_main_vs_extras_default(self):
         """Verify different defaults for main vs extras."""
         clip_audio = [{"codec_name": "unknown_codec", "bit_rate": 0}]
-        
+
         # Extras: should use 256k default
         _, bitrate_extras = audio.get_audio_tracks_from_clip_data(clip_audio, is_main=False)
         assert bitrate_extras == 256_000
-        
+
         # Main: should use 640k default
         _, bitrate_main = audio.get_audio_tracks_from_clip_data(clip_audio, is_main=True)
         assert bitrate_main == 640_000

@@ -3,7 +3,6 @@
 import pytest
 
 from bd_shrink.classify import (
-    Classification,
     classify_playlists,
     count_main_clips_unique,
     has_video,
@@ -313,9 +312,9 @@ class TestClassification:
                 )
             },
         )
-        
+
         result = classify_playlists(inventory)
-        
+
         assert "00000" in result.main_playlists
         assert len(result.menu_playlists) == 0
         assert len(result.extras_playlists) == 0
@@ -329,7 +328,7 @@ class TestClassification:
             audio=[],
             subtitles=[],
         )
-        
+
         inventory = Inventory(
             clips={"00000": movie_clip_hd, "90000": menu_clip_lowres},
             playlists={
@@ -349,9 +348,9 @@ class TestClassification:
                 ),
             },
         )
-        
+
         result = classify_playlists(inventory)
-        
+
         assert "00000" in result.main_playlists
         assert "90000" in result.menu_playlists
 
@@ -369,9 +368,9 @@ class TestClassification:
                 )
             },
         )
-        
+
         result = classify_playlists(inventory)
-        
+
         # Type 1 should be menu regardless of duration
         assert "90000" in result.menu_playlists
         assert "90000" not in result.main_playlists
@@ -397,9 +396,9 @@ class TestClassification:
                 ),
             },
         )
-        
+
         result = classify_playlists(inventory)
-        
+
         assert "00000" in result.main_playlists
         assert "00001" in result.extras_playlists
 
@@ -424,9 +423,9 @@ class TestClassification:
                 ),
             },
         )
-        
+
         result = classify_playlists(inventory)
-        
+
         assert "00000" in result.main_playlists
         assert "90001" in result.menu_playlists
 
@@ -455,7 +454,7 @@ class TestSeamlessBranching:
                 ),
             },
         )
-        
+
         # Both playlists share the same clip
         assert is_seamless_branching(inventory, "00000") is True
         assert is_seamless_branching(inventory, "00001") is True
@@ -481,7 +480,7 @@ class TestSeamlessBranching:
                 ),
             },
         )
-        
+
         assert is_seamless_branching(inventory, "00000") is False
         assert is_seamless_branching(inventory, "00001") is False
 
@@ -503,9 +502,9 @@ class TestMainClipCounting:
                 )
             },
         )
-        
+
         count, duration = count_main_clips_unique(inventory, ["00000"])
-        
+
         assert count == 1
         assert duration == 7200.0
 
@@ -530,10 +529,10 @@ class TestMainClipCounting:
                 ),
             },
         )
-        
+
         # Both playlists reference the same clip
         count, duration = count_main_clips_unique(inventory, ["00000", "00001"])
-        
+
         # Should count unique clips only once
         assert count == 1
         assert duration == 7200.0
@@ -552,8 +551,8 @@ class TestMainClipCounting:
                 )
             },
         )
-        
+
         count, duration = count_main_clips_unique(inventory, ["00000"])
-        
+
         assert count == 1
         assert duration == 7200.0

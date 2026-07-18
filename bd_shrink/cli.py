@@ -32,9 +32,7 @@ Examples:
         """,
     )
 
-    parser.add_argument(
-        "--version", action="version", version=f"%(prog)s {__version__}"
-    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
     # Input/output
     parser.add_argument(
@@ -44,9 +42,7 @@ Examples:
         default="",
         help="Source BDMV folder (must contain index.bdmv), video file (.mkv/.mp4/.m4v), or ISO image (.iso)",
     )
-    parser.add_argument(
-        "-o", "--output", type=str, default="", help="Output directory"
-    )
+    parser.add_argument("-o", "--output", type=str, default="", help="Output directory")
     parser.add_argument(
         "-w",
         "--work",
@@ -178,6 +174,13 @@ Examples:
         metavar="N",
         help="Run at low CPU priority (default N=19)",
     )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Limit ffmpeg CPU threads (0=auto)",
+    )
 
     # TUI and special modes
     parser.add_argument(
@@ -276,6 +279,7 @@ def args_to_config(args: argparse.Namespace) -> Config:
         force=args.force,
         clean_work=args.clean_work,
         nice=args.nice,
+        threads=args.threads,
         use_tui=args.tui,
         install_deps=args.install_deps,
         override_main_playlists=args.main_playlist,

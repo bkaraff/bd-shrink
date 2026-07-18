@@ -4,7 +4,7 @@
 
 **bd_shrink** is a self-contained Python package that shrinks BD50 Blu-ray backups or video files to BD25-compatible BDMV folders. The package is invoked via `python -m bd_shrink` (or the thin bash shim `./bd_shrink.sh`), with an optional interactive TUI for source/output selection, encoding profiles, and burn options.
 
-- **Source**: BDMV folder, parent folder containing `BDMV/`, ISO image file (`.iso`), or a single video file (`.mkv`/`.mp4`/`.m4v`)
+- **Source**: BDMV folder or parent folder containing `BDMV/`. ISO image (`.iso`) and single video file (`.mkv`/`.mp4`/`.m4v`) input are planned but **not yet wired** in v0.3.0 — mount/extract the ISO or provide a BDMV folder.
 - **`--movie-only`**: reliable mode; fresh BD, no menus. Works on any disc including BD-J.
 - **Default (surgical)**: preserves original menus and structure (IGS/HDMV and BD-J), re-encodes only video clips.
 - **`--codec hevc`**: uses `libx265` when `tsMuxeR` supports `V_MPEGH/ISO/HEVC`; default is H.264.
@@ -24,11 +24,11 @@ python -m bd_shrink -s /path/to/BDMV -o /output -f --movie-only
 python -m bd_shrink -s /path/to/BDMV -o /output -f
 ./bd_shrink.sh -s /path/to/BDMV -o /output -f
 
-# Single video file (forces movie-only)
+# Single video file (forces movie-only) — not yet wired in v0.3.0
 python -m bd_shrink -s movie.mkv -o /output -f
 ./bd_shrink.sh -s movie.mkv -o /output -f
 
-# ISO image input (auto-mounts or extracts)
+# ISO image input (auto-mounts or extracts) — not yet wired in v0.3.0
 python -m bd_shrink -s disc.iso -o /output -f --movie-only
 ./bd_shrink.sh -s disc.iso -o /output -f --movie-only
 
@@ -53,10 +53,10 @@ python -m bd_shrink --install-deps
 
 ```
 bd_shrink/
-├── __init__.py __main__.py       # entrypoint: python -m bd_shrink
+├── __init__.py __main__.py       # entrypoint: python -m bd_shrink (full 7-phase orchestrator)
 ├── cli.py                        # argparse + validation (40+ flags)
 ├── config.py                     # Config dataclass; audio-bitrate flags removed
-├── logging_setup.py              # logging to /var/log/bd-shrink or ~/.local/share/bd-shrink/logs
+├── logging_setup.py              # file logging to /var/log/bd-shrink, ~/.local/share/bd-shrink/logs, and work dir
 ├── runner.py                     # systemd-run --user --wait via subprocess
 ├── deps.py                       # --install-deps dispatch
 ├── audio.py                      # codec→ext map, bitrate fallback table, helpers
@@ -272,6 +272,8 @@ Default: `${OUTPUT}.work` (sibling of output). Configurable via `-w / --work`. W
 
 ## Logging
 
+`logging_setup.py` configures a `bd_shrink` logger with three handlers:
+
 Main log file mirrors to:
 - `/var/log/bd-shrink/bd_shrink_YYYYMMDD_HHMMSS.log` (if writable)
 - `~/.local/share/bd-shrink/logs/bd_shrink_YYYYMMDD_HHMMSS.log` (fallback)
@@ -331,7 +333,7 @@ Auto-launched when `-s`/`-o` are omitted (requires `questionary`). The TUI runs 
 
 ## Test coverage
 
-226 pytest tests across all modules:
+291 pytest tests across all modules:
 
 - `test_scaffold.py`: package structure + entrypoints
 - `test_cli.py`: argument parsing + validation (target ≥1 GB, codec, nice range, decimal-only playlist regex)
@@ -344,6 +346,7 @@ Auto-launched when `-s`/`-o` are omitted (requires `questionary`). The TUI runs 
 - `test_encode.py`: audio/subtitle extraction, video encoding, resumability, retry logic
 - `test_rebuild_validate_iso.py`: tsMuxeR metafile generation, BDMV validation, ISO creation, burn options
 - `test_tui.py`: TUI components, interactive flow, questionary mocks
+- `test_orchestrate.py`: source/output resolution, clip helpers, FPS normalization, resume detection, `main()` entry paths, mocked end-to-end pipeline
 
 **No Blu-ray disc or ffmpeg needed** for unit tests; all logic is pure functions with fixtures.
 
@@ -364,7 +367,7 @@ Green at all steps before merge to `main`.
 ### Branching
 
 - **`main`**: stable; v0.3.0+ (Python package) once merged
-- **`dev-next`**: active development; phases 1–6 complete; Phase 7 (docs) in progress
+- **`dev-next`**: active development; all 7 pipeline phases wired end-to-end via `__main__.py` orchestrator; `logging_setup.py` implemented; Phase 7 (docs) in progress
 
 ### Adding a new feature
 
@@ -382,7 +385,7 @@ The old bash script (`bd_shrink.sh` in `main`) is archived for reference. Key de
 - **No heredocs**: Python code is now in proper modules, not embedded shell strings
 - **No dotfiles**: data flows as objects; JSON checkpoints are optional (for resume/debug)
 - **Type safety**: dataclasses replace string parsing
-- **Test coverage**: 226 tests vs. zero in v0.2.x
+- **Test coverage**: 291 tests vs. zero in v0.2.x
 - **Audio flags gone**: `--main-audio`, `--commentary-ab`, `--extras-ab` removed (dead since b070cf7)
 
 ### Resuming interrupted runs
@@ -406,21 +409,25 @@ python -m bd_shrink -s /path/to/BDMV -o /output -f --movie-only
 
 ## Test Encode & Release Checkpoint (v0.3.0)
 
-All 10 code review bugs fixed; ready for real-world validation. After test encodes complete, three decision points:
+All 10 code review bugs fixed; `__main__.py` orchestrator wired end-to-end; CI green (ruff check + format, 288 tests passing). Ready for real-world validation. After test encodes complete, two remaining decision points:
 
-### 1. Pre-release polish (choose one or both)
-- **Option A**: Fix `mpls.py` F841 linter warnings (pre-existing, out of scope) so CI passes cleanly on `ruff check`
-- **Option B**: Polish error messages and user-facing docs for better UX during failures
-- **Option C**: Both A and B
-- **Option D**: Neither; acceptable to merge with pre-existing F841 warnings (low priority)
+### 1. Pre-release polish
+- **Option A**: Polish error messages and user-facing docs for better UX during failures
+- **Option B**: Rewrite README for v0.3.0 (Phase 7 docs)
+- **Option C**: Both
 
 ### 2. Release timing
 - **Option A**: Merge `dev-next` → `main` and tag v0.3.0 immediately after successful test encodes
 - **Option B**: Wait for additional review/testing cycle before release
 - **Option C**: Release as v0.3.0-rc1 (release candidate) for broader beta testing first
 
-### 3. Post-release roadmap (v0.4.0+)
+### Known gaps for v0.3.0
+- ISO image input (.iso) — mount/extract not yet wired; currently rejected with a "not yet supported" error
+- Single video-file input (.mkv/.mp4/.m4v) — BDMV fabrication not yet implemented; rejected with a "not yet supported" error
+
+### Post-release roadmap (v0.4.0+)
 - **High priority**: Parallel encoding (multi-clip batches via `multiprocessing`)
+- **High priority**: ISO/single video-file input support (mount for ISO, BDMV/structure fabrication for single files)
 - **Medium priority**: Better error recovery (ffmpeg retry logic, fallback codecs)
 - **Medium priority**: Windows/macOS support (rewrite `systemd-run` wrapper)
 - **Nice-to-have**: Web UI (FastAPI + React), streaming output to TUI, performance profiling
@@ -429,6 +436,7 @@ All 10 code review bugs fixed; ready for real-world validation. After test encod
 
 - **Windows/macOS support**: rewrite `systemd-run` wrapper to use subprocess directly or platform-specific process isolation
 - **Parallel encoding**: current encode loop is serial; could use `multiprocessing` for multi-clip batches
+- **ISO/single-file source input**: mount ISO files, fabricate BDMV from single video files
 - **Better error recovery**: retry logic for ffmpeg failures with fallback codecs
 - **Web UI**: FastAPI + React frontend (optional)
 - **Streaming output**: live progress updates to TUI instead of polling `.work` files

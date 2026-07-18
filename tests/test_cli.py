@@ -131,14 +131,22 @@ class TestConfigConversion:
 
     def test_args_to_config_with_custom_values(self):
         """Verify Config with custom argument values."""
-        args, _ = parse_args([
-            "-s", "/src",
-            "-o", "/out",
-            "--target", "30",
-            "--codec", "hevc",
-            "--main-passes", "1",
-            "--nice", "15",
-        ])
+        args, _ = parse_args(
+            [
+                "-s",
+                "/src",
+                "-o",
+                "/out",
+                "--target",
+                "30",
+                "--codec",
+                "hevc",
+                "--main-passes",
+                "1",
+                "--nice",
+                "15",
+            ]
+        )
         config = args_to_config(args)
         assert config.source == "/src"
         assert config.output == "/out"
@@ -149,11 +157,15 @@ class TestConfigConversion:
 
     def test_args_to_config_burn_flags(self):
         """Verify burn-related flags."""
-        args, _ = parse_args([
-            "--burn",
-            "--burn-device", "/dev/sr0",
-            "--burn-speed", "8",
-        ])
+        args, _ = parse_args(
+            [
+                "--burn",
+                "--burn-device",
+                "/dev/sr0",
+                "--burn-speed",
+                "8",
+            ]
+        )
         config = args_to_config(args)
         assert config.burn is True
         assert config.burn_device == "/dev/sr0"

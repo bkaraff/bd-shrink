@@ -81,7 +81,7 @@ class TestRunSimple:
         # Create a temp file in tmp_path
         test_file = tmp_path / "test.txt"
         test_file.write_text("content")
-        
+
         # List files in tmp_path
         result = run_simple(
             ["ls", "test.txt"],
@@ -129,7 +129,7 @@ class TestCheckReturncode:
 
 class TestRunFF:
     """Test run_ff function (systemd-run wrapper).
-    
+
     Note: These tests don't actually call systemd-run (not available in all environments).
     Instead, they verify the function would construct correct commands.
     In CI, these tests verify basic structure without executing systemd-run.
@@ -138,21 +138,21 @@ class TestRunFF:
     def test_run_ff_nice_validation_too_low(self):
         """Verify nice < 0 is rejected."""
         from bd_shrink.runner import run_ff
-        
+
         with pytest.raises(ValueError, match="nice must be 0-19"):
             run_ff(["echo", "test"], nice=-1)
 
     def test_run_ff_nice_validation_too_high(self):
         """Verify nice > 19 is rejected."""
         from bd_shrink.runner import run_ff
-        
+
         with pytest.raises(ValueError, match="nice must be 0-19"):
             run_ff(["echo", "test"], nice=20)
 
     def test_run_ff_nice_validation_valid_min(self):
         """Verify nice=0 is accepted."""
         from bd_shrink.runner import run_ff
-        
+
         # Should not raise; will fail at systemd-run call if systemd unavailable
         # This just verifies validation passes
         try:
@@ -167,7 +167,7 @@ class TestRunFF:
     def test_run_ff_nice_validation_valid_max(self):
         """Verify nice=19 is accepted."""
         from bd_shrink.runner import run_ff
-        
+
         try:
             run_ff(["echo", "test"], nice=19)
         except FileNotFoundError:
@@ -271,8 +271,10 @@ class TestRunManaged:
         from unittest.mock import patch
 
         sentinel = RunResult(returncode=0, stdout="", stderr="", succeeded=True)
-        with patch("bd_shrink.runner.systemd_run_available", return_value=True), \
-             patch("bd_shrink.runner.run_ff", return_value=sentinel) as mock_ff:
+        with (
+            patch("bd_shrink.runner.systemd_run_available", return_value=True),
+            patch("bd_shrink.runner.run_ff", return_value=sentinel) as mock_ff,
+        ):
             result = run_managed(["ffmpeg", "-version"], nice=10, logger=null_logger)
         assert result is sentinel
         mock_ff.assert_called_once()

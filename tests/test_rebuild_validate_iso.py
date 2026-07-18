@@ -7,20 +7,23 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from bd_shrink.iso import ISOResult, burn_direct_pipe, burn_iso, cleanup_iso_mounts, create_iso
+from bd_shrink.iso import ISOResult, burn_iso, cleanup_iso_mounts, create_iso
 from bd_shrink.rebuild import (
     RebuildStats,
     audio_tsmuxer_type,
     count_audio_in_clip,
     count_subtitles_in_clip,
     find_audio_file,
-    rebuild_movie_only,
     rebuild_surgical,
     video_tsmuxer_type,
-    write_tsmuxer_meta_movie_only,
-    write_tsmuxer_meta_surgical,
 )
-from bd_shrink.validate import ValidationResult, check_output_size, validate_bdmv_structure, validate_clpi_file, validate_m2ts_file
+from bd_shrink.validate import (
+    ValidationResult,
+    check_output_size,
+    validate_bdmv_structure,
+    validate_clpi_file,
+    validate_m2ts_file,
+)
 
 
 @pytest.fixture
@@ -79,12 +82,12 @@ class TestRebuildHelpers:
     def test_count_audio_in_clip_multiple(self, temp_dirs, null_logger):
         """Verify count returns correct number of audio tracks."""
         os.makedirs(temp_dirs["encode"], exist_ok=True)
-        
+
         # Create dummy audio files
         for i in range(3):
             with open(os.path.join(temp_dirs["encode"], f"00000_audio_{i}.ac3"), "w") as f:
                 f.write("dummy")
-        
+
         count = count_audio_in_clip(temp_dirs["encode"], "00000")
         assert count == 3
 
@@ -97,12 +100,12 @@ class TestRebuildHelpers:
     def test_count_subtitles_in_clip_multiple(self, temp_dirs):
         """Verify count returns correct number of subtitle tracks."""
         os.makedirs(temp_dirs["encode"], exist_ok=True)
-        
+
         # Create dummy subtitle files
         for i in range(2):
             with open(os.path.join(temp_dirs["encode"], f"00000_sub_{i}.sup"), "w") as f:
                 f.write("dummy")
-        
+
         count = count_subtitles_in_clip(temp_dirs["encode"], "00000")
         assert count == 2
 
@@ -112,7 +115,7 @@ class TestRebuildHelpers:
         audio_path = os.path.join(temp_dirs["encode"], "00000_audio_0.ac3")
         with open(audio_path, "w") as f:
             f.write("dummy")
-        
+
         found = find_audio_file(temp_dirs["encode"], "00000", 0)
         assert found == audio_path
 
@@ -134,9 +137,9 @@ class TestValidation:
         """Verify validation fails for empty file."""
         os.makedirs(temp_dirs["temp"], exist_ok=True)
         empty_file = os.path.join(temp_dirs["temp"], "empty.m2ts")
-        with open(empty_file, "w") as f:
+        with open(empty_file, "w"):
             pass
-        
+
         assert validate_m2ts_file(empty_file) is False
 
     def test_validate_clpi_file_missing(self):
@@ -147,17 +150,17 @@ class TestValidation:
         """Verify validation fails for empty CLPI."""
         os.makedirs(temp_dirs["temp"], exist_ok=True)
         empty_file = os.path.join(temp_dirs["temp"], "empty.clpi")
-        with open(empty_file, "w") as f:
+        with open(empty_file, "w"):
             pass
-        
+
         assert validate_clpi_file(empty_file) is False
 
     def test_validate_bdmv_structure_missing_dirs(self, temp_dirs, null_logger):
         """Verify structure validation detects missing directories."""
         os.makedirs(temp_dirs["output"], exist_ok=True)
-        
+
         result = validate_bdmv_structure(temp_dirs["output"], null_logger)
-        
+
         assert result.valid is False
         assert len(result.missing_files) > 0
 
@@ -167,13 +170,13 @@ class TestValidation:
         os.makedirs(os.path.join(temp_dirs["output"], "BDMV/STREAM"), exist_ok=True)
         os.makedirs(os.path.join(temp_dirs["output"], "BDMV/CLIPINF"), exist_ok=True)
         os.makedirs(os.path.join(temp_dirs["output"], "BDMV/PLAYLIST"), exist_ok=True)
-        
+
         # Create index.bdmv
         with open(os.path.join(temp_dirs["output"], "BDMV/index.bdmv"), "w") as f:
             f.write("dummy")
-        
+
         result = validate_bdmv_structure(temp_dirs["output"], null_logger)
-        
+
         # Should have no missing/corrupted required files
         assert "BDMV" not in result.missing_files
         assert "BDMV/index.bdmv" not in result.missing_files
@@ -184,7 +187,7 @@ class TestValidation:
         test_file = os.path.join(temp_dirs["temp"], "test.bin")
         with open(test_file, "wb") as f:
             f.write(b"x" * 1000)
-        
+
         fits, size_gb = check_output_size(test_file, 50, null_logger)
         assert fits is True
         assert size_gb > 0
@@ -196,7 +199,7 @@ class TestValidation:
         # Create a very large file (1 MB)
         with open(test_file, "wb") as f:
             f.write(b"x" * (1024 * 1024))
-        
+
         fits, size_gb = check_output_size(test_file, 0, null_logger)  # 0 GB target
         assert fits is False
 
@@ -211,7 +214,7 @@ class TestISO:
             os.path.join(temp_dirs["temp"], "output.iso"),
             null_logger,
         )
-        
+
         # Should fail due to missing genisoimage or source
         # (depends on test environment)
         assert isinstance(result, ISOResult)
@@ -223,7 +226,7 @@ class TestISO:
             "/dev/sr0",
             null_logger,
         )
-        
+
         assert result.success is False
         assert "not found" in result.error_message
 
@@ -253,7 +256,7 @@ class TestRebuildStats:
             copied_clips=0,
             success=True,
         )
-        
+
         assert stat.mode == "movie_only"
         assert stat.success is True
 
@@ -268,7 +271,7 @@ class TestRebuildStats:
             copied_clips=2,
             success=True,
         )
-        
+
         assert stat.mode == "surgical"
         assert stat.remuxed_clips == 3
         assert stat.copied_clips == 2
@@ -286,7 +289,7 @@ class TestValidationResult:
             warnings=[],
             output_bytes=25000000000,
         )
-        
+
         assert result.valid is True
         assert len(result.missing_files) == 0
 
@@ -299,7 +302,7 @@ class TestValidationResult:
             warnings=["Orphan CLPI without M2TS"],
             output_bytes=0,
         )
-        
+
         assert result.valid is False
         assert len(result.missing_files) == 1
         assert len(result.corrupted_files) == 1
@@ -332,9 +335,11 @@ class TestSurgicalNoExtras:
         os.makedirs(temp_dirs["work"], exist_ok=True)
 
         # tsMuxeR resolved but never actually needed (no encoded videos present).
-        with patch("bd_shrink.rebuild.find_tool", return_value="/usr/bin/tsMuxeR"), \
-             patch("bd_shrink.rebuild.run_simple") as mock_simple, \
-             patch("bd_shrink.rebuild.run_managed") as mock_managed:
+        with (
+            patch("bd_shrink.rebuild.find_tool", return_value="/usr/bin/tsMuxeR"),
+            patch("bd_shrink.rebuild.run_simple") as mock_simple,
+            patch("bd_shrink.rebuild.run_managed") as mock_managed,
+        ):
             mock_simple.return_value = MagicMock(succeeded=True)
             mock_managed.return_value = MagicMock(succeeded=True)
 
@@ -378,9 +383,11 @@ class TestSurgicalNoExtras:
         os.makedirs(temp_dirs["encode"], exist_ok=True)
         os.makedirs(temp_dirs["work"], exist_ok=True)
 
-        with patch("bd_shrink.rebuild.find_tool", return_value="/usr/bin/tsMuxeR"), \
-             patch("bd_shrink.rebuild.run_simple") as mock_simple, \
-             patch("bd_shrink.rebuild.run_managed") as mock_managed:
+        with (
+            patch("bd_shrink.rebuild.find_tool", return_value="/usr/bin/tsMuxeR"),
+            patch("bd_shrink.rebuild.run_simple") as mock_simple,
+            patch("bd_shrink.rebuild.run_managed") as mock_managed,
+        ):
             mock_simple.return_value = MagicMock(succeeded=True)
             mock_managed.return_value = MagicMock(succeeded=True)
 

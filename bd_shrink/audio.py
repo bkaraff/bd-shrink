@@ -6,20 +6,39 @@ CODEC_TO_EXT = {
     "eac3": ".eac3",
     "dts": ".dts",
     "truehd": ".thd",
-    "pcm_bluray": ".wav",
+    "pcm_bluray": ".w64",
     "pcm_s16be": ".wav",
     "pcm_s24be": ".wav",
     "pcm_s16le": ".wav",
     "pcm_s24le": ".wav",
 }
 
-# Map file extensions to tsMuxeR audio track types
+# Audio codecs that need explicit -f format flag for ffmpeg extraction
+AUDIO_FORMAT_OVERRIDE = {
+    "truehd": "truehd",
+    "pcm_bluray": "w64",
+}
+
+# Map subtitle codec names to file extensions
+SUBTITLE_CODEC_TO_EXT = {
+    "hdmv_pgs_subtitle": ".sup",
+    "pgs_subtitle": ".sup",
+    "subrip": ".srt",
+}
+
+# Map subtitle codec names to ffmpeg -f format specifier
+SUBTITLE_CODEC_TO_FORMAT = {
+    "hdmv_pgs_subtitle": "sup",
+    "pgs_subtitle": "sup",
+    "subrip": "srt",
+}
 EXT_TO_TSMUXER_TYPE = {
     ".ac3": "A_AC3",
     ".eac3": "A_EAC3",
     ".dts": "A_DTS",
     ".thd": "A_TRUEHD",
     ".wav": "A_LPCM",
+    ".w64": "A_LPCM",
 }
 
 # Fallback bitrates (bytes/sec) for codecs when ffprobe returns 0
@@ -66,6 +85,30 @@ def tsmuxer_type(ext_or_codec: str) -> str:
     # Otherwise, convert codec to extension first, then to type
     ext = audio_ext(ext_or_codec)
     return EXT_TO_TSMUXER_TYPE.get(ext, "A_AC3")
+
+
+def subtitle_ext(codec: str) -> str:
+    """Return file extension for a subtitle codec.
+
+    Args:
+        codec: Codec name from ffprobe (e.g., 'hdmv_pgs_subtitle')
+
+    Returns:
+        File extension including dot (e.g., '.sup', '.srt')
+    """
+    return SUBTITLE_CODEC_TO_EXT.get(codec, ".sup")
+
+
+def subtitle_format(codec: str) -> str:
+    """Return ffmpeg -f format specifier for a subtitle codec.
+
+    Args:
+        codec: Codec name from ffprobe
+
+    Returns:
+        ffmpeg format string (e.g., 'sup', 'srt') or empty string if unknown
+    """
+    return SUBTITLE_CODEC_TO_FORMAT.get(codec, "")
 
 
 def should_skip(codec: str) -> bool:
@@ -127,7 +170,7 @@ def count_audio(encode_dir: str, clip_id: str) -> int:
     count = 0
     while True:
         found = False
-        for ext in ["ac3", "eac3", "dts", "thd", "wav"]:
+        for ext in ["ac3", "eac3", "dts", "thd", "wav", "w64"]:
             candidate = os.path.join(encode_dir, f"{clip_id}_audio_{count}.{ext}")
             if os.path.isfile(candidate):
                 found = True
@@ -155,17 +198,17 @@ def find_audio(encode_dir: str, clip_id: str, audio_idx: int) -> str:
     """
     import os
 
-    for ext in ["ac3", "eac3", "dts", "thd", "wav"]:
+    for ext in ["ac3", "eac3", "dts", "thd", "wav", "w64"]:
         candidate = os.path.join(encode_dir, f"{clip_id}_audio_{audio_idx}.{ext}")
         if os.path.isfile(candidate):
             return candidate
 
-    raise FileNotFoundError(
-        f"Audio track not found: {clip_id}_audio_{audio_idx}.<ext>"
-    )
+    raise FileNotFoundError(f"Audio track not found: {clip_id}_audio_{audio_idx}.<ext>")
 
 
-def get_audio_tracks_from_clip_data(clip_audio_list: list, is_main: bool = False) -> tuple[int, int]:
+def get_audio_tracks_from_clip_data(
+    clip_audio_list: list, is_main: bool = False
+) -> tuple[int, int]:
     """Count audio tracks and estimate total bitrate for a clip.
 
     Counts non-MPEG audio tracks and calculates total bitrate from source rates.

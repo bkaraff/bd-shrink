@@ -3,7 +3,7 @@
 import logging
 import os
 import tempfile
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -98,15 +98,15 @@ class TestSkipIfExists:
         out_file = os.path.join(temp_dirs["encode"], "test_video.h264")
         with open(out_file, "w") as f:
             f.write("content")
-        
+
         assert skip_if_exists(out_file=out_file) is True
 
     def test_skip_if_out_file_empty(self, temp_dirs):
         """Verify don't skip if output file is empty."""
         out_file = os.path.join(temp_dirs["encode"], "test_video.h264")
-        with open(out_file, "w") as f:
+        with open(out_file, "w"):
             pass  # Empty file
-        
+
         assert skip_if_exists(out_file=out_file) is False
 
     def test_skip_if_pass_log_exists(self, temp_dirs):
@@ -114,14 +114,14 @@ class TestSkipIfExists:
         pass_log = os.path.join(temp_dirs["work"], "pass_00000.log")
         with open(pass_log + "-0.log", "w") as f:
             f.write("log content")
-        
+
         assert skip_if_exists(pass_log_base=pass_log) is True
 
     def test_skip_if_neither_exists(self, temp_dirs):
         """Verify don't skip if nothing exists."""
         out_file = os.path.join(temp_dirs["encode"], "nonexistent.h264")
         pass_log = os.path.join(temp_dirs["work"], "nonexistent.log")
-        
+
         assert skip_if_exists(out_file=out_file, pass_log_base=pass_log) is False
 
 
@@ -185,12 +185,12 @@ class TestExtractAudio:
             AudioStream(index=0, codec_name="mp2", bit_rate=192000, channel_layout="2.0"),
             AudioStream(index=1, codec_name="mp3", bit_rate=128000, channel_layout="2.0"),
         ]
-        
+
         # Create dummy source file
         src_path = os.path.join(temp_dirs["source"], "00000.m2ts")
         with open(src_path, "w") as f:
             f.write("dummy")
-        
+
         # Should skip both MPEG codecs
         tracks, exts = extract_audio(mock_clip, src_path, temp_dirs["encode"], null_logger)
         assert tracks == 0
@@ -201,7 +201,7 @@ class TestExtractAudio:
         src_path = os.path.join(temp_dirs["source"], "00000.m2ts")
         with open(src_path, "w") as f:
             f.write("dummy")
-        
+
         # Without mocking ffmpeg, extraction returns 0
         # (would succeed with real ffmpeg)
         with patch("bd_shrink.encode.run_managed") as mock_run:
@@ -214,12 +214,12 @@ class TestExtractAudio:
         src_path = os.path.join(temp_dirs["source"], "00000.m2ts")
         with open(src_path, "w") as f:
             f.write("dummy")
-        
+
         # Create dummy audio output
         audio_out = os.path.join(temp_dirs["encode"], "00000_audio_0.ac3")
         with open(audio_out, "w") as f:
             f.write("audio")
-        
+
         # Should resume (not call ffmpeg)
         with patch("bd_shrink.encode.run_managed") as mock_run:
             tracks, exts = extract_audio(mock_clip, src_path, temp_dirs["encode"], null_logger)
@@ -235,11 +235,11 @@ class TestExtractSubtitles:
         mock_clip.subtitles = [
             SubtitleStream(index=0, codec_name="dvd_subtitle"),
         ]
-        
+
         src_path = os.path.join(temp_dirs["source"], "00000.m2ts")
         with open(src_path, "w") as f:
             f.write("dummy")
-        
+
         # Should skip DVD subtitle
         tracks = extract_subtitles(mock_clip, src_path, temp_dirs["encode"], null_logger)
         assert tracks == 0
@@ -249,7 +249,7 @@ class TestExtractSubtitles:
         src_path = os.path.join(temp_dirs["source"], "00000.m2ts")
         with open(src_path, "w") as f:
             f.write("dummy")
-        
+
         with patch("bd_shrink.encode.run_managed") as mock_run:
             mock_run.return_value = MagicMock(succeeded=False)
             tracks = extract_subtitles(mock_clip, src_path, temp_dirs["encode"], null_logger)
@@ -266,11 +266,11 @@ class TestEncodeVideoSinglePass:
         out_video = os.path.join(temp_dirs["encode"], f"{mock_clip.clip_id}_video.h264")
         with open(out_video, "w") as f:
             f.write("video")
-        
+
         src_path = os.path.join(temp_dirs["source"], "00000.m2ts")
         with open(src_path, "w") as f:
             f.write("dummy")
-        
+
         # Should resume without calling ffmpeg
         with patch("bd_shrink.encode.run_managed") as mock_run:
             result = encode_video_single_pass(
@@ -293,7 +293,7 @@ class TestEncodeVideoSinglePass:
             audio=[],
             subtitles=[],
         )
-        
+
         src_path = os.path.join(temp_dirs["source"], "00000.m2ts")
         result = encode_video_single_pass(
             clip,
@@ -313,9 +313,9 @@ class TestEncodeVideoTwoPass:
         out_video = os.path.join(temp_dirs["encode"], f"{mock_clip.clip_id}_video.h264")
         with open(out_video, "w") as f:
             f.write("video")
-        
+
         src_path = os.path.join(temp_dirs["source"], "00000.m2ts")
-        
+
         with patch("bd_shrink.encode.run_managed") as mock_run:
             result = encode_video_two_pass(
                 mock_clip,
@@ -337,7 +337,7 @@ class TestEncodeVideoTwoPass:
             audio=[],
             subtitles=[],
         )
-        
+
         src_path = os.path.join(temp_dirs["source"], "00000.m2ts")
         result = encode_video_two_pass(
             clip,
@@ -362,12 +362,12 @@ class TestEncodeClip:
             audio=[],
             subtitles=[],
         )
-        
+
         # Create dummy source file
         src_path = os.path.join(temp_dirs["source"], "00000.m2ts")
         with open(src_path, "w") as f:
             f.write("dummy")
-        
+
         stat = encode_clip(
             clip,
             "main",
@@ -379,7 +379,7 @@ class TestEncodeClip:
             clip_idx=1,
             logger=null_logger,
         )
-        
+
         assert stat.success is True  # Skipped gracefully
         assert stat.video_encoded is False
 
@@ -396,7 +396,7 @@ class TestEncodeClip:
             clip_idx=1,
             logger=null_logger,
         )
-        
+
         assert stat.success is False
         assert stat.video_encoded is False
 
@@ -407,7 +407,7 @@ class TestEncodeAll:
     def test_encode_all_empty(self, temp_dirs, default_config, null_logger):
         """Verify encode_all handles empty clip lists."""
         inventory = Inventory(clips={}, playlists={})
-        
+
         stats = encode_all(
             inventory,
             extras_clips=[],
@@ -418,7 +418,7 @@ class TestEncodeAll:
             config=default_config,
             logger=null_logger,
         )
-        
+
         assert stats == []
 
     def test_encode_all_no_extras(self, temp_dirs, default_config, null_logger):
@@ -437,7 +437,7 @@ class TestEncodeAll:
             subtitles=[],
         )
         inventory = Inventory(clips={"00001": clip}, playlists={})
-        
+
         stats = encode_all(
             inventory,
             extras_clips=["00001"],
@@ -449,7 +449,7 @@ class TestEncodeAll:
             no_extras=True,
             logger=null_logger,
         )
-        
+
         # Should return empty list since extras skipped
         assert len(stats) == 0
 
@@ -467,7 +467,7 @@ class TestEncodeStats:
             video_encoded=True,
             success=True,
         )
-        
+
         assert stat.success is True
         assert stat.audio_tracks == 2
 
@@ -481,6 +481,6 @@ class TestEncodeStats:
             video_encoded=False,
             success=False,
         )
-        
+
         assert stat.success is False
         assert stat.video_encoded is False
