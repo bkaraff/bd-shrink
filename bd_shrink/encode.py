@@ -16,6 +16,7 @@ from typing import Optional
 
 from bd_shrink.audio import (
     AUDIO_FORMAT_OVERRIDE,
+    AUDIO_TRANSCODE,
     audio_ext,
     should_skip,
     subtitle_ext,
@@ -122,7 +123,6 @@ def extract_audio(
         return 0, []
 
     audio_codecs = get_audio_codecs(clip, logger)
-    audio_args = ["ffmpeg", "-y", "-v", "error", "-fflags", "+genpts", "-i", src_path]
 
     actual_audio_idx = 0
     track_exts = []
@@ -138,50 +138,35 @@ def extract_audio(
         track_exts.append(ext)
         out_path = os.path.join(encode_dir, f"{clip.clip_id}_audio_{actual_audio_idx}{ext}")
 
-        audio_args += ["-map", f"0:a:{ai}", "-c:a", "copy"]
+        # Check if already extracted
+        if os.path.isfile(out_path) and os.path.getsize(out_path) > 0:
+            actual_audio_idx += 1
+            continue
+
+        # Build per-track command to isolate failures
+        codec_args = ["ffmpeg", "-y", "-v", "error", "-fflags", "+genpts", "-i", src_path]
+        codec_args += ["-map", f"0:a:{ai}"]
+
+        if codec in AUDIO_TRANSCODE:
+            codec_args += ["-c:a", AUDIO_TRANSCODE[codec]]
+        else:
+            codec_args += ["-c:a", "copy"]
+
         if codec in AUDIO_FORMAT_OVERRIDE:
-            audio_args += ["-f", AUDIO_FORMAT_OVERRIDE[codec]]
-        audio_args += [out_path]
-        actual_audio_idx += 1
+            codec_args += ["-f", AUDIO_FORMAT_OVERRIDE[codec]]
+
+        codec_args += [out_path]
+
+        result = run_managed(codec_args, logger=logger)
+        if result.succeeded and os.path.isfile(out_path) and os.path.getsize(out_path) > 0:
+            actual_audio_idx += 1
+        elif logger:
+            logger.warning(f"Audio track {ai} ({codec}) extraction failed for {clip.clip_id}")
 
     if actual_audio_idx == 0:
         return 0, []
 
-    # Run extraction
-    first_audio = (
-        os.path.join(encode_dir, f"{clip.clip_id}_audio_0{track_exts[0]}") if track_exts else None
-    )
-
-    if skip_if_exists(out_file=first_audio):
-        # Verify all tracks exist
-        audio_tracks = actual_audio_idx
-        for ai in range(actual_audio_idx):
-            ext = track_exts[ai]
-            out_file = os.path.join(encode_dir, f"{clip.clip_id}_audio_{ai}{ext}")
-            if not os.path.isfile(out_file):
-                audio_tracks = 0
-                break
-        return audio_tracks, track_exts if audio_tracks > 0 else []
-
-    result = run_managed(audio_args, logger=logger)
-
-    if (
-        result.succeeded
-        and first_audio
-        and os.path.isfile(first_audio)
-        and os.path.getsize(first_audio) > 0
-    ):
-        # Verify all tracks exist
-        audio_tracks = actual_audio_idx
-        for ai in range(actual_audio_idx):
-            ext = track_exts[ai]
-            out_file = os.path.join(encode_dir, f"{clip.clip_id}_audio_{ai}{ext}")
-            if not os.path.isfile(out_file):
-                audio_tracks = 0
-                break
-        return audio_tracks, track_exts if audio_tracks > 0 else []
-
-    return 0, []
+    return actual_audio_idx, track_exts
 
 
 def extract_subtitles(

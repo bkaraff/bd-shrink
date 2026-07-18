@@ -19,6 +19,11 @@ AUDIO_FORMAT_OVERRIDE = {
     "pcm_bluray": "w64",
 }
 
+# Audio codecs that can't be stream-copied — must be transcoded
+AUDIO_TRANSCODE = {
+    "pcm_bluray": "pcm_s24be",
+}
+
 # Map subtitle codec names to file extensions
 SUBTITLE_CODEC_TO_EXT = {
     "hdmv_pgs_subtitle": ".sup",

@@ -43,6 +43,9 @@ python -m bd_shrink -s /path/to/BDMV -o /output -f --movie-only --burn --iso
 # Dependency check (no source/output needed)
 python -m bd_shrink --install-deps
 ./bd_shrink.sh --install-deps
+
+# Limit CPU threads (controls ffmpeg -threads; 0 = auto)
+python -m bd_shrink -s /path/to/BDMV -o /output -f --movie-only --threads 8
 ```
 
 ## Architecture
@@ -409,17 +412,22 @@ python -m bd_shrink -s /path/to/BDMV -o /output -f --movie-only
 
 ## Test Encode & Release Checkpoint (v0.3.0)
 
-All 10 code review bugs fixed; `__main__.py` orchestrator wired end-to-end; CI green (ruff check + format, 288 tests passing). Ready for real-world validation. After test encodes complete, two remaining decision points:
+All 10 code review bugs fixed; `__main__.py` orchestrator wired end-to-end; CI green (ruff check + format, 291 tests passing). Real-world test encode in progress against Red.Beard.1965.1080p.Blu-ray.AVC.DTS-HD.MA.5.1-ApheX (46GB BD50, 19 clips, 12 playlists, 185 min). 
 
-### 1. Pre-release polish
-- **Option A**: Polish error messages and user-facing docs for better UX during failures
-- **Option B**: Rewrite README for v0.3.0 (Phase 7 docs)
-- **Option C**: Both
+### Test encode progress (2026-07-17)
+- **MPLS parser fixes**: PlayItem length field excludes itself (spec-correct), 45kHz timestamps, error-resilient ASCII/decode, corrupt playlist skip in inventory
+- **Subtitle extraction fix**: Was using `audio_ext()` + `tsmuxer_type()` → `.ac3`/`A_AC3`; now uses `subtitle_ext()`/`subtitle_format()` → `.sup`/`sup`
+- **pcm_bluray audio fix**: Not stream-copyable; added `AUDIO_TRANSCODE` dict mapping to `pcm_s24be` with `.w64` extension and `-f w64` format
+- **Audio extraction per-track**: Changed from single ffmpeg multi-output command to individual per-track commands; cascading failure from one track no longer breaks all tracks
+- **0-byte audio files**: `find_audio_file()` and `count_audio_in_clip()` now skip files with `getsize() == 0` so tsMuxeR doesn't crash
+- **`--threads N`**: New CLI flag to limit ffmpeg CPU threads (applied to all 3 encode paths when >0)
+- **encode phase works**: Main clip 00015 (42GB, 185 min) re-encoded to 7.9GB H.264 successfully
+- **rebuild/validate**: tsMuxeR segfaulted due to empty audio files (fixed); CLPI corruption from that crash (should self-heal on re-run)
+- **encode resumable**: Video output files preserved, audio-only re-extraction on resume
 
-### 2. Release timing
-- **Option A**: Merge `dev-next` → `main` and tag v0.3.0 immediately after successful test encodes
-- **Option B**: Wait for additional review/testing cycle before release
-- **Option C**: Release as v0.3.0-rc1 (release candidate) for broader beta testing first
+### Remaining
+- Re-run after audio extraction fixes to get clean rebuild + validate through
+- Output was 45.82GB vs 25GB target due to original 40GB clip copied when tsMuxeR failed; should be ~10-12GB with fixed rebuild
 
 ### Known gaps for v0.3.0
 - ISO image input (.iso) — mount/extract not yet wired; currently rejected with a "not yet supported" error

@@ -73,7 +73,8 @@ def count_audio_in_clip(encode_dir: str, clip_id: str) -> int:
     for idx in range(10):  # Max 10 audio tracks
         # Check for common audio extensions
         for ext in [".ac3", ".eac3", ".dts", ".thd", ".wav", ".w64"]:
-            if os.path.isfile(os.path.join(encode_dir, f"{clip_id}_audio_{idx}{ext}")):
+            path = os.path.join(encode_dir, f"{clip_id}_audio_{idx}{ext}")
+            if os.path.isfile(path) and os.path.getsize(path) > 0:
                 count += 1
                 break
     return count
@@ -112,7 +113,7 @@ def find_audio_file(encode_dir: str, clip_id: str, audio_idx: int) -> Optional[s
     """
     for ext in [".ac3", ".eac3", ".dts", ".thd", ".wav", ".w64"]:
         path = os.path.join(encode_dir, f"{clip_id}_audio_{audio_idx}{ext}")
-        if os.path.isfile(path):
+        if os.path.isfile(path) and os.path.getsize(path) > 0:
             return path
     return None
 
