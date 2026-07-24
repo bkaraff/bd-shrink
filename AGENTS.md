@@ -340,7 +340,7 @@ Auto-launched when `-s`/`-o` are omitted (requires `questionary`). The TUI runs 
 
 ## Test coverage
 
-291 pytest tests across all modules:
+309 pytest tests across all modules:
 
 - `test_scaffold.py`: package structure + entrypoints
 - `test_cli.py`: argument parsing + validation (target ≥1 GB, codec, nice range, decimal-only playlist regex)
@@ -392,7 +392,7 @@ The old bash script (`bd_shrink.sh` in `main`) is archived for reference. Key de
 - **No heredocs**: Python code is now in proper modules, not embedded shell strings
 - **No dotfiles**: data flows as objects; JSON checkpoints are optional (for resume/debug)
 - **Type safety**: dataclasses replace string parsing
-- **Test coverage**: 302 tests vs. zero in v0.2.x
+- **Test coverage**: 309 tests vs. zero in v0.2.x
 - **Audio flags gone**: `--main-audio`, `--commentary-ab`, `--extras-ab` removed (dead since b070cf7)
 
 ### Resuming interrupted runs
@@ -416,7 +416,7 @@ python -m bd_shrink -s /path/to/BDMV -o /output -f --movie-only
 
 ## Test Encode & Release Checkpoint (v0.3.0)
 
-All 10 code review bugs fixed; `__main__.py` orchestrator wired end-to-end; CI green (ruff check + format, 302 tests passing). Real-world test encode in progress against Red.Beard.1965.1080p.Blu-ray.AVC.DTS-HD.MA.5.1-ApheX (46GB BD50, 19 clips, 12 playlists, 185 min). 
+All 10 code review bugs fixed; `__main__.py` orchestrator wired end-to-end; CI green (ruff check + format, 309 tests passing). Real-world test encode in progress against Red.Beard.1965.1080p.Blu-ray.AVC.DTS-HD.MA.5.1-ApheX (46GB BD50, 19 clips, 12 playlists, 185 min). 
 
 ### Test encode progress (2026-07-17)
 - **MPLS parser fixes**: PlayItem length field excludes itself (spec-correct), 45kHz timestamps, error-resilient ASCII/decode, corrupt playlist skip in inventory

@@ -6,6 +6,7 @@ source type, then drives inventory -> classify -> budget -> encode -> rebuild
 """
 
 import json
+import logging
 import os
 import shutil
 import sys
@@ -151,6 +152,7 @@ def apply_overrides(
     config: Config,
     inv: inventory.Inventory,
     classification: classify.Classification,
+    logger: Optional[logging.Logger] = None,
 ) -> classify.Classification:
     """Apply --main-playlist / --extra / --menu / --not-extra overrides.
 
@@ -161,38 +163,46 @@ def apply_overrides(
     quality first (720p CRF) and then silently skipped by the main pass
     because ``skip_if_exists`` sees the existing output.
     """
+
+    def resolve_override(flag_value: str, flag_name: str) -> Optional[list[str]]:
+        """Parse an override CSV, keeping only playlists present on the disc.
+
+        Warns about names not matching a disc playlist (likely typos) and
+        raises if none match — an empty override would otherwise silently
+        empty the bucket (e.g. a typo'd --extra would encode no extras while
+        rebuild still copies the full-size clips, blowing the size budget).
+        """
+        if not flag_value:
+            return None
+        parsed = parse_playlist_csv(flag_value)
+        matched = [p for p in parsed if p in inv.playlists]
+        dropped = [p for p in parsed if p not in inv.playlists]
+        if dropped and logger:
+            logger.warning(f"{flag_name}: not on disc, ignored: {', '.join(dropped)}")
+        if not matched:
+            raise PipelineError(f"{flag_name}: none of {', '.join(parsed)} found on disc")
+        return matched
+
     main = list(classification.main_playlists)
     extras = list(classification.extras_playlists)
     menus = list(classification.menu_playlists)
 
-    override_main = (
-        [p for p in parse_playlist_csv(config.override_main_playlists) if p in inv.playlists]
-        if config.override_main_playlists
-        else None
-    )
-    override_extras = (
-        [p for p in parse_playlist_csv(config.override_extras) if p in inv.playlists]
-        if config.override_extras
-        else None
-    )
-    override_menus = (
-        [p for p in parse_playlist_csv(config.override_menus) if p in inv.playlists]
-        if config.override_menus
-        else None
-    )
+    override_main = resolve_override(config.override_main_playlists, "--main-playlist")
+    override_extras = resolve_override(config.override_extras, "--extra")
+    override_menus = resolve_override(config.override_menus, "--menu")
 
     if override_main is not None:
-        main = override_main or main
+        main = override_main
         main_set = set(main)
         extras = [p for p in extras if p not in main_set]
         menus = [p for p in menus if p not in main_set]
     if override_extras is not None:
-        extras = override_extras or extras
+        extras = override_extras
         extras_set = set(extras)
         main = [p for p in main if p not in extras_set]
         menus = [p for p in menus if p not in extras_set]
     if override_menus is not None:
-        menus = override_menus or menus
+        menus = override_menus
         menus_set = set(menus)
         main = [p for p in main if p not in menus_set]
         extras = [p for p in extras if p not in menus_set]
@@ -360,7 +370,7 @@ def run_pipeline(
     # Phase 2: Classify
     logger.info("[2/7] Classify")
     classification = classify.classify_playlists(inv)
-    classification = apply_overrides(config, inv, classification)
+    classification = apply_overrides(config, inv, classification, logger)
     write_checkpoint(work_dir, "classify.json", json.dumps(asdict(classification), indent=2))
     main_clips = dedup_clips(inv, classification.main_playlists)
     extras_clips = [] if config.movie_only else dedup_clips(inv, classification.extras_playlists)

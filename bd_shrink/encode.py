@@ -180,7 +180,15 @@ def extract_subtitles(
     encode_dir: str,
     logger: Optional[logging.Logger] = None,
 ) -> int:
-    """Extract subtitle tracks from clip (skip DVD/VobSub, keep PGS/DVB).
+    """Extract subtitle tracks from clip (passthrough stream-copy, skip DVD/VobSub).
+
+    Known limitation (shared with extract_audio): output files are numbered by
+    a running counter that only increments on success, so if an earlier track
+    fails and a later one succeeds, the later track's content shifts into the
+    earlier filename. Within one run that is a benign reordering, but resuming
+    afterwards can then extract the failed track under the next index and
+    duplicate content. Naming outputs by source stream index would fix this
+    but requires rebuild's contiguous 0..9 discovery to change too.
 
     Args:
         clip: Clip metadata
@@ -195,9 +203,8 @@ def extract_subtitles(
         return 0
 
     sub_codecs = get_subtitle_codecs(clip, logger)
-    sb_args = ["ffmpeg", "-y", "-v", "error", "-i", src_path]
-
     actual_sub_idx = 0
+
     for si, codec in enumerate(sub_codecs):
         # Skip non-BD-compatible subtitle codecs (DVD/VobSub)
         if codec in ("dvd_subtitle", "dvdsub", "dvd_sub", "dvd"):
@@ -207,34 +214,33 @@ def extract_subtitles(
 
         ext = subtitle_ext(codec)
         fmt = subtitle_format(codec)
+        out_path = os.path.join(encode_dir, f"{clip.clip_id}_sub_{actual_sub_idx}{ext}")
 
-        sb_args += ["-map", f"0:s:{si}", "-c", "copy"]
+        # Check if already extracted
+        if os.path.isfile(out_path) and os.path.getsize(out_path) > 0:
+            actual_sub_idx += 1
+            continue
+
+        sb_args = ["ffmpeg", "-y", "-v", "error", "-i", src_path, "-map", f"0:s:{si}", "-c", "copy"]
         if fmt:
             sb_args += ["-f", fmt]
-        sb_args += [os.path.join(encode_dir, f"{clip.clip_id}_sub_{actual_sub_idx}{ext}")]
-        actual_sub_idx += 1
+        sb_args += [out_path]
 
-    if actual_sub_idx == 0:
-        return 0
+        result = run_managed(sb_args, logger=logger)
+        if result.succeeded and os.path.isfile(out_path) and os.path.getsize(out_path) > 0:
+            actual_sub_idx += 1
+        else:
+            if logger:
+                logger.warning(
+                    f"Subtitle track {si} ({codec}) extraction failed for {clip.clip_id}"
+                )
+            try:
+                if os.path.isfile(out_path):
+                    os.remove(out_path)
+            except OSError:
+                pass
 
-    # Check if already extracted
-    first_sub = (
-        os.path.join(encode_dir, f"{clip.clip_id}_sub_0.sup") if actual_sub_idx > 0 else None
-    )
-    if skip_if_exists(out_file=first_sub):
-        return actual_sub_idx
-
-    result = run_managed(sb_args, logger=logger)
-
-    if (
-        result.succeeded
-        and first_sub
-        and os.path.isfile(first_sub)
-        and os.path.getsize(first_sub) > 0
-    ):
-        return actual_sub_idx
-
-    return 0
+    return actual_sub_idx
 
 
 def encode_video_single_pass(

@@ -333,6 +333,37 @@ class TestClipHelpers:
         assert "00001.mpls" not in result.main_playlists
         assert "00001.mpls" not in result.extras_playlists
 
+    @pytest.mark.parametrize(
+        "field",
+        ["override_main_playlists", "override_extras", "override_menus"],
+    )
+    def test_apply_overrides_empty_match_raises(self, sample_inventory, field):
+        """An override naming no disc playlist fails fast instead of silently
+        emptying the bucket (a typo'd --extra would otherwise encode no extras
+        while rebuild still copies the full-size clips)."""
+        base = Classification(
+            main_playlists=["00000.mpls"],
+            extras_playlists=["00000.mpls"],
+            menu_playlists=[],
+        )
+        config = Config(source="/x", output="/y", **{field: "99999"})
+        with pytest.raises(PipelineError, match="none of .* found on disc"):
+            apply_overrides(config, sample_inventory, base)
+
+    def test_apply_overrides_warns_on_dropped_names(self, sample_inventory, caplog):
+        """Partially-matching overrides keep valid names and warn about the rest."""
+        base = Classification(
+            main_playlists=["00000.mpls"],
+            extras_playlists=[],
+            menu_playlists=[],
+        )
+        config = Config(source="/x", output="/y", override_extras="00000,99999")
+        logger = logging.getLogger("test_override_warn")
+        with caplog.at_level(logging.WARNING, logger="test_override_warn"):
+            result = apply_overrides(config, sample_inventory, base, logger)
+        assert result.extras_playlists == ["00000.mpls"]
+        assert "99999.mpls" in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # FPS helpers

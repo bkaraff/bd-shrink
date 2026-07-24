@@ -289,6 +289,75 @@ class TestExtractSubtitles:
             # Without real ffmpeg, would return 0
             assert tracks == 0
 
+    def test_extract_subtitles_per_track_resume(self, mock_clip, temp_dirs, null_logger):
+        """Verify per-track resume: existing track is skipped, missing one extracted."""
+        mock_clip.subtitles = [
+            SubtitleStream(index=0, codec_name="hdmv_pgs_subtitle"),
+            SubtitleStream(index=1, codec_name="hdmv_pgs_subtitle"),
+        ]
+        src_path = os.path.join(temp_dirs["source"], "00000.m2ts")
+        with open(src_path, "w") as f:
+            f.write("dummy")
+
+        # Track 0 already extracted, track 1 missing
+        with open(os.path.join(temp_dirs["encode"], "00000_sub_0.sup"), "w") as f:
+            f.write("sub0")
+
+        with patch("bd_shrink.encode.run_managed") as mock_run:
+            mock_run.return_value = MagicMock(succeeded=False)
+            tracks = extract_subtitles(mock_clip, src_path, temp_dirs["encode"], null_logger)
+            # Track 0 skipped (no ffmpeg call for it); track 1 attempted once
+            assert mock_run.call_count == 1
+            called_cmd = mock_run.call_args[0][0]
+            assert "0:s:1" in called_cmd
+            # Resumed track still counted even though track 1 failed
+            assert tracks == 1
+
+    def test_extract_subtitles_failure_isolation(self, mock_clip, temp_dirs, null_logger):
+        """Verify one failing track doesn't prevent other tracks from extracting."""
+        mock_clip.subtitles = [
+            SubtitleStream(index=0, codec_name="hdmv_pgs_subtitle"),
+            SubtitleStream(index=1, codec_name="hdmv_pgs_subtitle"),
+        ]
+        src_path = os.path.join(temp_dirs["source"], "00000.m2ts")
+        with open(src_path, "w") as f:
+            f.write("dummy")
+
+        def fake_run(cmd, logger=None):
+            # Fail track 0; succeed track 1 by writing its output like ffmpeg
+            if "0:s:1" in cmd:
+                with open(cmd[-1], "w") as f:
+                    f.write("sub1")
+                return MagicMock(succeeded=True)
+            return MagicMock(succeeded=False)
+
+        with patch("bd_shrink.encode.run_managed", side_effect=fake_run) as mock_run:
+            tracks = extract_subtitles(mock_clip, src_path, temp_dirs["encode"], null_logger)
+            # Both tracks attempted despite the first failing
+            assert mock_run.call_count == 2
+            assert tracks == 1
+            # Exactly one output file: the successful track's, no partial left
+            subs = [f for f in os.listdir(temp_dirs["encode"]) if f.startswith("00000_sub_")]
+            assert len(subs) == 1
+
+    def test_extract_subtitles_deletes_partial_on_failure(self, mock_clip, temp_dirs, null_logger):
+        """Verify failed extraction removes partial/0-byte output files."""
+        src_path = os.path.join(temp_dirs["source"], "00000.m2ts")
+        with open(src_path, "w") as f:
+            f.write("dummy")
+
+        def fake_run(cmd, logger=None):
+            # ffmpeg writes a 0-byte partial file then fails
+            with open(cmd[-1], "w"):
+                pass
+            return MagicMock(succeeded=False)
+
+        with patch("bd_shrink.encode.run_managed", side_effect=fake_run):
+            tracks = extract_subtitles(mock_clip, src_path, temp_dirs["encode"], null_logger)
+            assert tracks == 0
+            for fname in os.listdir(temp_dirs["encode"]):
+                assert not fname.startswith("00000_sub_")
+
 
 class TestEncodeVideoSinglePass:
     """Test single-pass video encoding."""

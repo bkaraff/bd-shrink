@@ -165,7 +165,8 @@ def calculate_budget(
         sum(
             inventory.clips[cid].duration_sec
             for pl_id in extras_playlist_ids
-            for cid in inventory.playlists.get(pl_id, {}).clips
+            if pl_id in inventory.playlists
+            for cid in inventory.playlists[pl_id].clips
             if cid in inventory.clips
         )
         if extras_clips
@@ -176,7 +177,8 @@ def calculate_budget(
         sum(
             inventory.clips[cid].duration_sec
             for pl_id in menu_playlist_ids
-            for cid in inventory.playlists.get(pl_id, {}).clips
+            if pl_id in inventory.playlists
+            for cid in inventory.playlists[pl_id].clips
             if cid in inventory.clips
         )
         if menu_clips
