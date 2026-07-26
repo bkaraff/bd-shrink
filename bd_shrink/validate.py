@@ -69,7 +69,7 @@ def validate_clpi_file(clpi_path: str, logger: Optional[logging.Logger] = None) 
                 return False
             if magic[:4] not in (b"HDMV", b"CLPI"):
                 return False
-            if magic[4:] not in (b"0100", b"0200"):
+            if magic[4:] not in (b"0100", b"0200", b"0300"):
                 return False
 
         return True
