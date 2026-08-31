@@ -593,7 +593,7 @@ burn_output() {
         growisofs_bin="$(command -v growisofs 2>/dev/null || true)"
         if [[ -n "$growisofs_bin" ]]; then
             local burn_args=(-dvd-compat)
-            [[ -n "$BURN_SPEED" ]] && burn_args+=(-speed "$BURN_SPEED")
+            [[ -n "$BURN_SPEED" ]] && burn_args+=(-speed="$BURN_SPEED")
             run_ff "$growisofs_bin" "${burn_args[@]}" -Z "${burn_dev}=${ISO_OUT}" || {
                 die "Burn failed with growisofs"
             }
@@ -618,7 +618,7 @@ burn_output() {
         log "Piping to $burn_dev via growisofs (no temp ISO)..."
         # Only stream BDMV/CERTIFICATE to the drive, not .work or other siblings
         local direct_burn_args=(-dvd-compat)
-        [[ -n "$BURN_SPEED" ]] && direct_burn_args+=(-speed "$BURN_SPEED")
+        [[ -n "$BURN_SPEED" ]] && direct_burn_args+=(-speed="$BURN_SPEED")
         run_ff env MKISOFS="$genisoimage_bin" "$growisofs_bin" "${direct_burn_args[@]}" -Z "$burn_dev" -udf -allow-limited-size -V "$ISO_LABEL" \
             -graft-points BDMV="$DST/BDMV" CERTIFICATE="$DST/CERTIFICATE" || {
             die "Burn failed with growisofs"
@@ -708,7 +708,7 @@ done
 
 # Validate burn speed
 if [[ -n "$BURN_SPEED" ]]; then
-    [[ "$BURN_SPEED" =~ ^[0-9]+$ ]] || die "Invalid --burn-speed $BURN_SPEED — must be a positive integer"
+    [[ "$BURN_SPEED" =~ ^[1-9][0-9]*$ ]] || die "Invalid --burn-speed $BURN_SPEED — must be a positive integer"
 fi
 
 # --install-deps: show dependency info and exit (no source/output required)
@@ -1445,10 +1445,28 @@ try:
     override_extras = [p.replace('.mpls', '') for p in override_extras if p.strip()]
     override_menus = [p.replace('.mpls', '') for p in override_menus if p.strip()]
     override_not_extras = [p.replace('.mpls', '') for p in override_not_extras if p.strip()]
-    
+
+    # Warn when the same playlist is requested by more than one override flag.
+    # The elif chain below would silently honor only the first branch, so make
+    # the ambiguity explicit instead of letting one override win quietly.
+    override_lists = {
+        '--main-playlist': override_main,
+        '--extra': override_extras,
+        '--menu': override_menus,
+        '--not-extra': override_not_extras,
+    }
+    seen_in = {}
+    for flag, pls in override_lists.items():
+        for p in pls:
+            seen_in.setdefault(p, []).append(flag)
+    for p, flags in seen_in.items():
+        if len(flags) > 1:
+            print(f"  WARNING: playlist {p}.mpls given in {' and '.join(flags)}; only '{flags[0]}' will apply")
+
     # When forcing main playlists, clear auto-detected main to allow
     # multiple overrides (e.g. alternate cuts). Append inside the loop
-    # so all matching entries accumulate; the dedup below is a no-op.
+    # so all matching entries accumulate; the dedup below also guards
+    # against the same playlist being repeated in a single list.
     if override_main:
         clf['main_movie'] = []
     # Apply overrides
