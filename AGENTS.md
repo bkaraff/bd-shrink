@@ -108,11 +108,10 @@ Critical details:
 
 ## Menu preservation (surgical mode)
 
-Menu clips are excluded from re-encoding via three signals:
+Menu clips are excluded from re-encoding via these signals:
 
-1. `PlayList_type == 1` read from the MPLS `AppInfoPlayList` struct
-2. Any playlist sharing a clip with a known menu playlist
-3. Zero chapter marks + duration < 120 s (warnings, logos, transitions)
+1. Any playlist sharing a clip with a known menu playlist
+2. Zero chapter marks + duration < 120 s (warnings, logos, transitions)
 
 Their clips are copied verbatim so IGS (Interactive Graphics) overlays stay intact. Anything else classified as an extra is re-encoded to 720p.
 
@@ -133,7 +132,7 @@ The script distinguishes "alternate cuts" (alternate angles, scene selections) f
 - **Extras floor (50 MB minimum):** playlists < 50 MB (even if duration suggests extras) are classified as menus/warnings/logos and copied instead of re-encoded
 - **Short-duration floor:** playlists < 120 s with zero chapters are classified as transitions/logos and copied
 
-These heuristics are applied after MPLS classification (playlist_type field) and can be overridden via `--extra`, `--not-extra`, and `--menu` flags for edge cases (e.g., a documentary misclassified as alternate cut, or a bonus feature too small to encode efficiently).
+These heuristics are applied after MPLS inventory and can be overridden via `--extra`, `--not-extra`, and `--menu` flags for edge cases (e.g., a documentary misclassified as alternate cut, or a bonus feature too small to encode efficiently). AppInfoPlayList PlaybackType is recorded for diagnostics only; values mean sequential, random, or shuffle playback, not menu status.
 
 ## Dependencies
 
@@ -166,7 +165,7 @@ Auto-launched when `-s`/`-o` are omitted (requires `gum`). Source selection retr
 
 ## Gotchas
 
-- **bash only**: `README.md` still incorrectly says "Requires zsh"; the script was rewritten in bash. Use `bash -n bd_shrink.sh` for syntax checks, not `zsh -n`.
+- **bash only**: use `bash -n bd_shrink.sh` for syntax checks. Parser fixtures can be run with `python3 tests/test_parsers.py`.
 - **`local` is only valid inside functions** in bash.
 - Use `read < file` for line-oriented metadata reads; the script reads metadata files with `read`/`while read` loops, not `$(< file)`.
 - `EXTRAS_CLIPS` and `MAIN_CLIPS` have trailing newlines from `while read` — trimmed with parameter expansion (`${VAR%$'\n'}`) before use.
@@ -187,7 +186,7 @@ The changes below pass `bash -n` and were validated with mock/fixture data on a 
 
 ## Known issues
 
-- **IGS/HDMV menu freeze on full-disc re-encodes (surgical mode):** Re-encoding lossless audio (required to fit BD25) changes stream PIDs and track sets. If the disc has IGS/HDMV menus with navigation that references specific streams, the menu may freeze or navigation may fail. The script detects this condition during Phase 1 (preflight) and hard-fails with a clear recommendation to use `--movie-only` mode instead. This is intentional: it prevents shipping a disc with frozen menus. Workaround: use `--movie-only` (always works, no menus).
+- **IGS/HDMV menu freeze on full-disc re-encodes (surgical mode):** Re-encoding lossless audio (required to fit BD25) changes stream PIDs and track sets. If the disc has IGS/HDMV menus with navigation that references specific streams, the menu may freeze or navigation may fail. The script warns during preflight and compares source/output CLPI stream layouts after remuxing; a detected change hard-fails with a clear recommendation to use `--movie-only` mode instead. This is intentional: it prevents shipping a disc with frozen menus. Workaround: use `--movie-only` (always works, no menus).
 - **BD-J discs with metadata-dependent Java code:** BD-J menus may reference specific CLPI timestamps or stream PIDs of re-encoded clips. If the Java code depends on exact metadata, playback may malfunction. Most BD-J menus only play playlists and ignore metadata, so surgical mode works for the majority. Test carefully before burning. Workaround: use `--movie-only`.
 - Some discs have corrupt H.264 in source clips. The script skips these gracefully; the output will lack video for affected clips but won't fail.
 
@@ -199,9 +198,10 @@ These are subtle behaviors that took real debugging to get right. Verify against
 - **Python `.format()` in path joins** — inside the heredocs, `os.path.join(..., '{}.m2ts'.format(clip))` is used deliberately; `str.format` on strings containing `{}` from disc paths caused crashes. Do not switch these to f-strings or `%` carelessly.
 - **Passlog detection is a glob, not a fixed suffix** — use `glob.glob(pass_log + '*')`. x264 writes `-0.log`; x265 differs. Never hardcode `-0.log`.
 - **Resume parity** — on resume, both extras and main clips re-verify the audio track count so a partial prior run doesn't leave fewer tracks than expected.
-- **Argument validation** — `--target` must match `^[0-9]+$`; audio bitrates match `^[0-9]+k?$`; `--nice` must be `0-19`. Keep these guards when adding flags.
+- **Argument validation** — `--target` and `--burn-speed` must be positive integers; audio bitrates match `^[0-9]+k?$`; `--nice` must be `0-19`. Keep these guards when adding flags.
 - **Missing-file guards** — `MovieObject.bdmv` copy skips gracefully if absent (incomplete discs must not fatal).
 - **Early exit on no main playlist** — classification aborts with a clear message if no main movie is identified, rather than failing deep in a later phase.
 - **Branched-title warning** — multi-clip titles with differing audio/subtitle track counts emit a warning (seamless-branching edge case).
 - **Budget reads tolerate truncation** — reads of `.budget_values.txt` use `|| true` so a truncated dotfile doesn't trip `set -e`.
 - **ISO temp cleanup** — `.iso` inputs mount under `/tmp` and are cleaned up by the `ERR`/exit trap (`cleanup_iso`), even on failure.
+- **ISO naming** — preserve the original ISO input title before replacing `SOURCE` with its temporary mount path; an explicit `-o name.iso` writes to that exact path.

@@ -4,7 +4,7 @@ Shrink BD50 Blu-ray backups to BD25 (or any target size) on Linux — preserving
 
 A Linux-native alternative to BD Rebuilder that uses `ffmpeg` + `tsMuxeR` to re-encode Blu-ray content while keeping the original structure intact.
 
-**Requires zsh** (Fedora 44 / kernel 7.0.11: bash has a known SIGCHLD crash). All encoding runs in a single resumable Python process.
+Requires Bash and Python 3.6 or newer. All encoding runs in a single resumable Python process.
 
 ## Quick Start
 
@@ -23,6 +23,9 @@ A Linux-native alternative to BD Rebuilder that uses `ffmpeg` + `tsMuxeR` to re-
 
 # Help
 ./bd_shrink.sh -h
+
+# Write an ISO to an exact path
+./bd_shrink.sh -s /path/to/BDMV -o /backup/movie.iso -f --movie-only
 ```
 
 ## Modes
@@ -78,6 +81,7 @@ Main bitrate:   17.53 Mbps  (to fill BD25)
 
 - **Folder**: Complete BDMV structure in a source-named subdirectory. When `-o` points to a parent directory (e.g., `/mnt/nvme/`), the script creates `<source-title>/` inside it with `BDMV/` and `CERTIFICATE/`. The `.work` directory lives as a sibling in the output root.
 - **ISO** (`--iso`): ISO file named after the source title (e.g., `<source-title>.iso`) containing only `BDMV/` and `CERTIFICATE/`. The `.work` directory is never included.
+- An output path ending in `.iso` is also accepted and writes the ISO at that exact path.
 - **Burn** (`--burn`): Burn output to BD-R disc via `growisofs` or `xorriso`. Same exclusion of work files applies.
 
 ## File structure of a typical BD50
@@ -105,13 +109,13 @@ CERTIFICATE/
 
 ```
   -s, --source DIR       Source BDMV folder (must contain index.bdmv)
-  -o, --output DIR       Output directory (auto-creates source-named
-                           subfolder when pointed at a parent directory)
+   -o, --output DIR|FILE  Output directory, or an exact `.iso` path
   -t, --target NUM       Target size in GB (default: 23 for BD25)
   --movie-only           Movie-only backup (no menus, fresh BD author)
   --iso                  Output ISO instead of BDMV folder
   --burn                  Burn output to BD-R after validation
-  --burn-device DEV       Optical drive device path (auto-detected if omitted)
+   --burn-device DEV       Optical drive device path (auto-detected if omitted)
+   --burn-speed N           BD-R write speed multiplier
   --no-extras            Skip extras entirely
   --keep-one             Only keep the longest movie playlist
   --extras-scale WxH     Extras downscale resolution (default: 1280:720)
@@ -142,6 +146,12 @@ CERTIFICATE/
 | `vlc` or `mpv` + `libbluray` | Playback / testing output before burning (optional) |
 
 See [INSTALL.md](INSTALL.md) for setup instructions, or run `./bd_shrink.sh --install-deps` to check for missing tools.
+
+## Tests
+
+```bash
+python3 tests/test_parsers.py
+```
 
 ## How It Works
 

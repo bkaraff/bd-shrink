@@ -156,7 +156,7 @@ Classification overrides (comma-separated, .mpls optional):
       --not-extra LIST     Exclude playlist(s) from extras (treat as menu)
   -h, --help             Show this help
 EOF
-    exit 1
+    exit "${1:-1}"
 }
 
 # Interactive TUI mode using charmbracelet/gum
@@ -408,12 +408,11 @@ run_tui() {
 
         local action=$(gum choose --height=5 \
             --header="SELECT ACTION" \
-            "Start" "Edit source" "Edit output" "Edit options" "Cancel" || true)
+            "Start" "Edit source" "Edit output" "Cancel" || true)
         case "$action" in
             Start) break ;;
             "Edit source") SOURCE=""; continue ;;
             "Edit output") OUTPUT=""; continue ;;
-            "Edit options") continue ;;
             *) exit 0 ;;
         esac
     done
@@ -600,7 +599,9 @@ burn_output() {
         else
             warn "growisofs not found — falling back to xorriso cdrecord (no UDF bridge)."
             warn "Some standalone BD players may not read this disc."
-            run_ff xorriso -as cdrecord -v -sao dev="$burn_dev" "$ISO_OUT" || {
+            local xorriso_args=(-as cdrecord -v -sao)
+            [[ -n "$BURN_SPEED" ]] && xorriso_args+=(speed="$BURN_SPEED")
+            run_ff xorriso "${xorriso_args[@]}" dev="$burn_dev" "$ISO_OUT" || {
                 die "Burn failed with xorriso"
             }
         fi
@@ -677,7 +678,7 @@ while [[ $# -gt 0 ]]; do
                 NICE=19; shift
             fi
             ;;
-        -h|--help)         usage ;;
+        -h|--help)         usage 0 ;;
         *)                 die "Unknown option: $1" ;;
     esac
 done
@@ -686,7 +687,7 @@ done
 [[ "$CODEC" =~ ^(h264|hevc)$ ]] || die "Invalid --codec $CODEC — use h264 or hevc"
 
 # Validate target GB
-[[ "$TARGET_GB" =~ ^[0-9]+$ ]] || die "Invalid --target $TARGET_GB — must be a positive integer (GB)"
+[[ "$TARGET_GB" =~ ^[1-9][0-9]*$ ]] || die "Invalid --target $TARGET_GB — must be a positive integer (GB)"
 
 # Validate audio bitrate arguments
 [[ "$MAIN_AUDIO_BITRATE" =~ ^[0-9]+k?$ ]] || die "Invalid --main-audio $MAIN_AUDIO_BITRATE — use format: 640k or 640"
@@ -739,12 +740,29 @@ if [[ -z "$OUTPUT" ]]; then
     log "Output not specified — defaulting to ${OUTPUT}"
 fi
 
+# An output path ending in .iso means the caller supplied the ISO filename.
+# Build the intermediate BDMV directory beside it, then write the ISO back to
+# the requested path.
+ISO_OUT_EXPLICIT=""
+if [[ "${OUTPUT,,}" == *.iso ]]; then
+    ISO_OUT_EXPLICIT="$OUTPUT"
+    OUTPUT_ISO=true
+    OUTPUT="${OUTPUT%.[iI][sS][oO]}"
+    [[ -n "$OUTPUT" ]] || die "Invalid ISO output path: $ISO_OUT_EXPLICIT"
+    if [[ -e "$ISO_OUT_EXPLICIT" ]] && ! $FORCE; then
+        die "ISO output exists. Use -f to overwrite: $ISO_OUT_EXPLICIT"
+    fi
+fi
+
 # --movie-only implies --keep-one (only the first main playlist is encoded)
 if $MOVIE_ONLY; then
     KEEP_ONE=true
 fi
 
 [[ -z "$SOURCE" ]] && die "Source folder required (-s)"
+
+# Keep the title before ISO input replaces SOURCE with a temporary mount path.
+SOURCE_TITLE_HINT="$(get_source_title "$SOURCE")"
 
 MKV_INPUT=false
 ISO_INPUT=false
@@ -826,7 +844,7 @@ fi
 # create/use a source-named subdirectory so the actual output is self-contained
 # and the work directory remains a sibling in the output root.
 if [[ -d "$OUTPUT" ]] && [[ ! -d "$OUTPUT/BDMV" ]]; then
-    source_title=$(get_source_title "$SOURCE")
+    source_title="$SOURCE_TITLE_HINT"
     output_candidate="${OUTPUT%/}/${source_title}"
     if [[ -d "$output_candidate" ]]; then
         OUTPUT="$output_candidate"
@@ -854,6 +872,17 @@ mkdir -p "$LOG_DIR"
 exec > >(tee -a "$LOG_FILE" "$WORK_DIR/bd_shrink.log") 2>&1
 log "Logging to $LOG_FILE"
 
+# Encoding can temporarily require several copies of the target size. Warn
+# before starting if the work volume is below a conservative estimate.
+WORK_PARENT="$(dirname "$WORK_DIR")"
+AVAIL_KB="$(df -Pk "$WORK_PARENT" 2>/dev/null | awk 'NR == 2 {print $4}')"
+if [[ -n "$AVAIL_KB" ]]; then
+    NEED_KB=$((TARGET_GB * 3 * 1048576))
+    if (( AVAIL_KB < NEED_KB )); then
+        warn "Low free space on $WORK_PARENT: $((AVAIL_KB / 1048576))G available; approximately $((TARGET_GB * 3))G recommended."
+    fi
+fi
+
 # Detect BD-J
 HAS_BDJ=false
 if ! $MOVIE_ONLY && ! $MKV_INPUT && [[ -d "$SOURCE/BDJO" || -d "$SOURCE/JAR" ]]; then
@@ -880,7 +909,7 @@ def parse_mpls(path):
     pm_offset = struct.unpack_from('>I', data, 12)[0]
     num_playitems = struct.unpack_from('>H', data, pl_offset + 6)[0]
     num_subpaths = struct.unpack_from('>H', data, pl_offset + 8)[0]
-    num_marks = struct.unpack_from('>H', data, pm_offset + 6)[0]
+    num_marks = struct.unpack_from('>H', data, pm_offset + 4)[0] if pm_offset + 6 <= len(data) else 0
 
     items = []
     off = pl_offset + 10
@@ -911,7 +940,8 @@ def parse_mpls(path):
         sub_end = off + 4 + splen
         sub_off = off + 4
         if sub_off + 6 <= sub_end and sub_off + 6 <= len(data):
-            num_spi = struct.unpack_from('>H', data, sub_off + 4)[0]
+            # NumberOfSubPlayItems is the byte after the reserved byte.
+            num_spi = data[sub_off + 5]
             spi_off = sub_off + 6
             for _ in range(num_spi):
                 if spi_off + 11 > sub_end or spi_off + 11 > len(data):
@@ -931,25 +961,26 @@ def parse_mpls(path):
 
     items.extend(subpath_items)
 
-    # Read PlayList_type from AppInfoPlayList (1 = menu/interactive)
-    # Bounds-check appinfo_len to avoid garbage playlist_type from misaligned offset
+    # AppInfoPlayList is embedded in the fixed 40-byte file header. PlaybackType
+    # is diagnostic metadata (1=standard, 2=random, 3=shuffle), not a menu flag.
     playlist_type = 0
-    if off + 4 < len(data):
+    if len(data) > 0x2D:
         try:
-            appinfo_len = struct.unpack_from('>I', data, off)[0]
-            # AppInfoPlayList must be reasonable size (at least 5 bytes)
-            if appinfo_len >= 5 and appinfo_len < 10000 and off + 4 + appinfo_len <= len(data):
-                playlist_type = data[off + 4 + 1]  # offset 4 (length) + 1 byte reserved = playlist_type
+            appinfo_len = struct.unpack_from('>I', data, 0x28)[0]
+            if 5 <= appinfo_len < 1000 and 0x28 + 4 + appinfo_len <= len(data):
+                playlist_type = data[0x2D]
         except (struct.error, IndexError):
             pass
 
     marks = []
     if num_marks > 0:
-        moff = pm_offset + 8
+        moff = pm_offset + 6
         for _ in range(num_marks):
-            mark_type = data[moff + 1] if moff + 1 < len(data) else 0
-            ref_to_playitem = struct.unpack_from('>H', data, moff + 2)[0] if moff + 3 < len(data) else 0
-            mark_time = struct.unpack_from('>I', data, moff + 4)[0] if moff + 7 < len(data) else 0
+            if moff + 14 > len(data):
+                break
+            mark_type = data[moff + 1]
+            ref_to_playitem = struct.unpack_from('>H', data, moff + 2)[0]
+            mark_time = struct.unpack_from('>I', data, moff + 4)[0]
             marks.append({
                 'type': mark_type,
                 'time': mark_time / 45000.0,
@@ -1195,7 +1226,7 @@ inventory['disc_size_mb'] = round(disc_size / 1048576, 1)
 json.dump(inventory, sys.stdout, indent=2)
 PYEOF
 
-log "Inventory complete: $(python3 -c 'import json,sys;d=json.load(open(sys.argv[1],encoding="utf-8"));print(f"{d["disc_size_gb"]} GB, {len(d["clips"])} clips, {len(d["playlists"])} playlists")' "$INVENTORY_FILE")"
+log "Inventory complete: $(python3 -c 'import json,sys;d=json.load(open(sys.argv[1],encoding="utf-8"));print("{} GB, {} clips, {} playlists".format(d["disc_size_gb"],len(d["clips"]),len(d["playlists"])))' "$INVENTORY_FILE")"
 
 # ─── Phase 2: Classify ───────────────────────────────────────────────────────
 
@@ -1229,10 +1260,9 @@ for pl_name, pl_data in pl_sorted:
     for c in clip_list:
         orphan_clips.discard(c)
 
-    # PlayList_type 1 = menu (from MPLS AppInfoPlayList)
-    if pl_data.get('playlist_type') == 1:
-        menu_pls.append(pl_name)
-        continue
+    # AppInfoPlayList PlaybackType describes sequential/random/shuffle
+    # playback, not whether a playlist is a menu. Menu classification uses
+    # the content and duration heuristics below.
 
     # Check if any referenced clip has video
     has_video = False
@@ -2103,6 +2133,15 @@ if not no_extras and not movie_only:
                                    '-b:a', extras_audio_bitrate, out_path]
                 actual_audio_idx += 1
             first_audio = os.path.join(encode_dir, '{}_audio_0.ac3'.format(clip))
+            if actual_audio_idx > 0:
+                track_files = [os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, ai))
+                               for ai in range(actual_audio_idx)]
+                existing = [p for p in track_files if os.path.isfile(p)]
+                if existing and len(existing) < len(track_files):
+                    # Remove partial multi-output extraction so resume retries it.
+                    for p in existing:
+                        try: os.remove(p)
+                        except OSError: pass
             if actual_audio_idx > 0 and run_ff(audio_args, out_file=first_audio):
                 audio_tracks = actual_audio_idx
                 for ai in range(actual_audio_idx):
@@ -2189,6 +2228,15 @@ if main_clips:
                                    '-b:a', bitrate, out_path]
                 actual_audio_idx += 1
             first_audio = os.path.join(encode_dir, '{}_audio_0.ac3'.format(clip))
+            if actual_audio_idx > 0:
+                track_files = [os.path.join(encode_dir, '{}_audio_{}.ac3'.format(clip, ai))
+                               for ai in range(actual_audio_idx)]
+                existing = [p for p in track_files if os.path.isfile(p)]
+                if existing and len(existing) < len(track_files):
+                    # Remove partial multi-output extraction so resume retries it.
+                    for p in existing:
+                        try: os.remove(p)
+                        except OSError: pass
             if actual_audio_idx > 0 and run_ff(audio_args, out_file=first_audio):
                 audio_tracks = actual_audio_idx
                 # Verify all expected tracks exist (resume safety: catch partial/missing tracks on re-run)
@@ -2543,8 +2591,8 @@ else
               if [[ ${#new_m2ts[@]} -gt 1 ]]; then
                   die "tsMuxeR split clip ${cid} into ${#new_m2ts[@]} parts. Surgical mode cannot handle multi-part clips. Use --movie-only mode instead."
               fi
-              run_ff cp "$new_m2ts" "$DST/BDMV/STREAM/${cid}.m2ts" || true
-              run_ff cp "$new_clpi" "$DST/BDMV/CLIPINF/${cid}.clpi" || true
+              run_ff cp "$new_m2ts" "$DST/BDMV/STREAM/${cid}.m2ts" || die "Failed to copy remuxed stream for ${cid}"
+              run_ff cp "$new_clpi" "$DST/BDMV/CLIPINF/${cid}.clpi" || die "Failed to copy remuxed CLPI for ${cid}"
               
               # Check if remux changed CLPI PIDs or stream coding types (navigation safety)
               python3 - "$SOURCE/CLIPINF/${cid}.clpi" "$DST/BDMV/CLIPINF/${cid}.clpi" "$WORK_DIR/.nav_unsafe_clips.txt" "$cid" << 'CLPI_DIFF'
@@ -2556,36 +2604,41 @@ try:
     clip_id = sys.argv[4]
     
     def parse_clpi_streams(clpi_path):
-        """Extract PIDs and stream_coding_types from CLPI ProgramInfo."""
+        """Extract (PID, stream_coding_type) pairs from CLPI ProgramInfo."""
         if not os.path.isfile(clpi_path):
             return set()
         try:
             with open(clpi_path, 'rb') as f:
                 data = f.read()
-            if len(data) < 20 or data[:4] != b'CLPI':
+            if len(data) < 28 or data[:4] != b'CLPI':
                 return set()
-            # ProgramInfo offset at bytes 8-11 (big-endian)
-            if len(data) < 12:
+            # ProgramInfoStartAddress is at header bytes 12-15;
+            # bytes 8-11 contain SequenceInfoStartAddress.
+            prog_offset = struct.unpack_from('>I', data, 12)[0]
+            if prog_offset < 28 or prog_offset + 6 > len(data):
                 return set()
-            prog_offset = struct.unpack_from('>I', data, 8)[0]
-            if prog_offset < 20 or prog_offset + 10 > len(data):
-                return set()
-            # StreamCodingInfo loop: offset at prog_offset+8
-            sdi_offset = struct.unpack_from('>H', data, prog_offset + 8)[0]
-            if sdi_offset + prog_offset + 2 > len(data):
-                return set()
-            sdi_base = prog_offset + sdi_offset
-            num_streams = struct.unpack_from('>B', data, sdi_base)[0] if sdi_base < len(data) else 0
+            # ProgramInfo: length(4) | reserved(1) | programs(1).
+            num_programs = data[prog_offset + 5]
             streams = set()
-            off = sdi_base + 1
-            for _ in range(num_streams):
-                if off + 5 > len(data):
-                    break
-                pid = struct.unpack_from('>H', data, off)[0]
-                coding_type = data[off + 2] if off + 2 < len(data) else 0
-                streams.add((pid, coding_type))
-                sdi_len = struct.unpack_from('>B', data, off + 3)[0] if off + 3 < len(data) else 0
-                off += 4 + sdi_len
+            off = prog_offset + 6
+            for _ in range(num_programs):
+                # Program: SPN(4) | PMT PID(2) | stream count(1) | reserved(1).
+                if off + 8 > len(data):
+                    return set()
+                num_streams = data[off + 6]
+                stream_off = off + 8
+                for _ in range(num_streams):
+                    # Stream: PID(2) | StreamCodingInfo(length + payload).
+                    if stream_off + 3 > len(data):
+                        return set()
+                    pid = struct.unpack_from('>H', data, stream_off)[0]
+                    sci_len = data[stream_off + 2]
+                    if sci_len < 1 or stream_off + 3 + sci_len > len(data):
+                        return set()
+                    coding_type = data[stream_off + 3]
+                    streams.add((pid, coding_type))
+                    stream_off += 3 + sci_len
+                off = stream_off
             return streams
         except Exception:
             return set()
@@ -2634,8 +2687,8 @@ CLPI_DIFF
             [[ -f "$DST/BDMV/STREAM/${cid}.m2ts" ]] && continue
             warn "  Falling back to original for ${cid}.m2ts"
         fi
-        run_ff cp "$SOURCE/STREAM/${cid}.m2ts" "$DST/BDMV/STREAM/${cid}.m2ts" || true
-        run_ff cp "$SOURCE/CLIPINF/${cid}.clpi" "$DST/BDMV/CLIPINF/${cid}.clpi" || true
+        run_ff cp "$SOURCE/STREAM/${cid}.m2ts" "$DST/BDMV/STREAM/${cid}.m2ts" || die "Failed to copy source stream for ${cid}"
+        run_ff cp "$SOURCE/CLIPINF/${cid}.clpi" "$DST/BDMV/CLIPINF/${cid}.clpi" || die "Failed to copy source CLPI for ${cid}"
     done
 
     # Copy orphan clips — clips in source STREAM/CLIPINF not referenced by any
@@ -2652,7 +2705,7 @@ CLPI_DIFF
     done
 
     # Copy all MPLS files
-    run_ff cp "$SOURCE/PLAYLIST/"*.mpls "$DST/BDMV/PLAYLIST/" 2>/dev/null || true
+    run_ff cp "$SOURCE/PLAYLIST/"*.mpls "$DST/BDMV/PLAYLIST/" || die "Failed to copy playlist files"
 
     # Copy extra metadata directories
     for dir in AUXDATA META BDJO JAR; do
@@ -2686,7 +2739,7 @@ It is the recommended and tested path for discs with complex menu systems."
 fi
 
 # Compute ISO/disc volume label from source title (ISO9660 rules: uppercase, no spaces)
-ISO_LABEL=$(get_source_title "$SOURCE")
+ISO_LABEL="$SOURCE_TITLE_HINT"
 ISO_LABEL="${ISO_LABEL^^}"
 ISO_LABEL="${ISO_LABEL// /_}"
 ISO_LABEL="${ISO_LABEL//[^A-Za-z0-9_]/}"
@@ -2699,11 +2752,10 @@ mkdir -p "$DST/CERTIFICATE"
 
 # Create ISO if explicitly requested (--iso)
 if $OUTPUT_ISO; then
-    if [[ "$OUTPUT" == *.iso ]]; then
-        ISO_OUT="$OUTPUT"
+    if [[ -n "$ISO_OUT_EXPLICIT" ]]; then
+        ISO_OUT="$ISO_OUT_EXPLICIT"
     else
-        iso_title=$(get_source_title "$SOURCE")
-        ISO_OUT="${OUTPUT%/}/${iso_title}.iso"
+        ISO_OUT="${OUTPUT%/}/${SOURCE_TITLE_HINT}.iso"
     fi
     log "Creating ISO: ${ISO_OUT}..."
 
