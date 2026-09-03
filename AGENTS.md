@@ -50,7 +50,7 @@ python -m bd_shrink -s /path/to/BDMV -o /output -f --movie-only --threads 8
 
 ## Architecture
 
-**bd_shrink** is a Python package (`bd_shrink/`) with 13 modules orchestrating a 7-phase pipeline. The bash shim (`bd_shrink.sh`) is a 3-line forward to `exec python3 -m bd_shrink "$@"`.
+**bd_shrink** is a Python package (`bd_shrink/`) with 13 modules orchestrating a 7-phase pipeline. The bash shim (`bd_shrink.sh`) prefers the system Python when Fedora's DNF-installed TUI modules are available, then forwards to `python3 -m bd_shrink "$@"`.
 
 ### Package structure
 
@@ -109,14 +109,14 @@ All phases pass in-memory objects (Clip, Inventory, ClassifyResult, BudgetResult
 
 5. **Rebuild** (rebuild.py)
    - **Movie-only mode**: generate fresh `tsMuxeR` metafile for one main-movie playlist
-   - **Surgical mode**: preserve menus and structure; remux re-encoded clips in place, copy menu/extra/orphan clips verbatim
-   - **Orphan-clip safety**: after playlist-referenced copies, scan `SOURCE/STREAM/*.m2ts` and copy any unreferenced files
+   - **Surgical mode**: preserve menus and structure; remux re-encoded clips in place, copy menu/extra clips verbatim
+   - **Orphan-clip safety**: unreferenced files are not copied by default; `--preserve-orphans` opts into scanning `SOURCE/STREAM/*.m2ts`
    - Output: BDMV folder with updated playlists + clips
 
 6. **Validate** (validate.py)
    - Check BDMV structure: required dirs (`BDMV/STREAM`, `BDMV/CLIPINF`, `BDMV/PLAYLIST` + `BDMV/index.bdmv`)
    - Validate M2TS/CLPI magic bytes (`0x47` for M2TS, `0x00` for CLPI)
-   - Check output size against target GB; warn if over
+   - Check output size against target GB; fail before ISO/burn if over
    - Output: `ValidationResult` with pass/fail + warnings
 
 7. **ISO/Burn** (iso.py)
@@ -166,6 +166,7 @@ Do **not** delete the `.work` directory or use `-f` when resuming.
 
 - `--movie-only` implies `--keep-one` (only output main playlist)
 - `--no-extras` skips extras encoding but keeps menus (surgical only)
+- `--preserve-orphans` copies unreferenced source clips; default surgical output excludes them to protect the target size
 - `-f` / `--force` checks **before** dry-run exit — needed even with `-n` if output exists
 - `--iso` creates an ISO; `--burn --iso` also creates one and then burns from it
 - `--nice` with no argument defaults to `N=19`; valid range 0–19. Applied via `systemd-run --property=Nice` for subprocesses.
@@ -213,7 +214,7 @@ The MPLS parser extracts `SubPlayItem` clips from SubPath entries (not just main
 
 ### Orphan-clip safety net
 
-After copying all playlist-referenced clips, the surgical rebuild does a final pass over `SOURCE/STREAM/*.m2ts` and copies any file not already in the output. This catches clips that exist on the disc but are referenced by navigation structures outside MPLS (e.g., `MovieObject.bdmv` FirstPlayback/TopMenu entries). Skipped when `--no-extras` is used.
+After copying all playlist-referenced clips, the surgical rebuild normally stops. Arbitrary unreferenced source clips are excluded by default because they can defeat the target size. `--preserve-orphans` performs a final pass over `SOURCE/STREAM/*.m2ts` and copies any file not already in the output, catching clips referenced only by navigation structures outside MPLS (e.g., `MovieObject.bdmv` FirstPlayback/TopMenu entries). Orphans are always skipped when `--no-extras` is used.
 
 ### B9 fix (unique clip deduplication)
 
@@ -249,8 +250,9 @@ Critical details:
 | `systemd-run` | Process isolation | Transient services for all subprocesses; escalates to sudo if needed |
 | `genisoimage` | UDF ISO creation | Required for burn; `mount` not required (fallback: `bsdtar`/`7z`) |
 | `growisofs` | BD-R burning | From `dvd+rw-tools` |
-| `questionary` | Interactive TUI | Python package; installed via pip; optional if `-s`/`-o` provided |
-| `rich` | Terminal rendering | Python package; installed via pip; used by questionary + logging |
+| `questionary` | Interactive TUI | Fedora: `python3-questionary`; optional if `-s`/`-o` provided |
+| `rich` | Terminal rendering | Fedora: `python3-rich`; used by questionary + logging |
+| `wcwidth` | Terminal width support | Fedora: `python3-wcwidth`; required by the TUI stack |
 
 Dev dependencies (testing/linting):
 
@@ -337,6 +339,7 @@ Auto-launched when `-s`/`-o` are omitted (requires `questionary`). The TUI runs 
 - **Corrupt H.264 in source clips**: some discs have malformed video. The script skips these gracefully; the output will lack video for affected clips but won't fail.
 - **SRT subtitles skipped in tsMuxeR meta**: tsMuxeR 2.7.0 on Linux lacks font rendering. PGS subtitles pass through; DVD/VobSub subtitles are filtered out.
 - **Movie-only mode size estimate**: audio + subtitle + container overhead can push total ~1–2% over target.
+- **ISO staging**: `--iso` builds under `.work/iso-staging`, removes staging after successful ISO creation, and retains it after failure.
 
 ## Test coverage
 
@@ -424,7 +427,7 @@ All 10 code review bugs fixed; `__main__.py` orchestrator wired end-to-end; CI g
 - **pcm_bluray audio fix**: Not stream-copyable; added `AUDIO_TRANSCODE` dict mapping to `pcm_s24le` with `.w64` extension and `-f w64` format
 - **Audio extraction per-track**: Changed from single ffmpeg multi-output command to individual per-track commands; cascading failure from one track no longer breaks all tracks
 - **0-byte audio files**: `find_audio_file()` and `count_audio_in_clip()` now skip files with `getsize() == 0` so tsMuxeR doesn't crash; failed extractions delete their partial output
-- **Orphan-clip safety net**: Implemented in surgical rebuild; copies unreferenced source clips after the wanted clips, skipped when `--no-extras` is used
+- **Orphan-clip safety net**: Unreferenced source clips are excluded by default; `--preserve-orphans` opts into copying them, and `--no-extras` always excludes them
 - **tsMuxeR output renaming**: tsMuxeR always emits `00000.m2ts`/`00000.clpi` for single-clip Blu-ray output; rebuild now detects and renames them to the correct clip_id
 - **CLPI validation fix**: Real CLPI files start with `HDMV0200` (or `CLPI`/`HDMV` + `0100`/`0200`); the old `CLPI0000` check caused every CLPI to appear corrupted
 - **`--threads N`**: New CLI flag to limit ffmpeg CPU threads (applied to all 3 encode paths when >0)

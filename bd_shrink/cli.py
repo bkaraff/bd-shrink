@@ -119,6 +119,11 @@ Examples:
         action="store_true",
         help="Only keep the longest movie playlist",
     )
+    parser.add_argument(
+        "--preserve-orphans",
+        action="store_true",
+        help="Keep unreferenced source clips (may exceed target size)",
+    )
 
     # Output format
     parser.add_argument(
@@ -252,6 +257,10 @@ def validate_args(args: argparse.Namespace) -> None:
     if args.burn_speed < 0:
         raise ValueError(f"--burn-speed must be >= 0, got {args.burn_speed}")
 
+    # An exact .iso path is meaningful only when ISO output was requested.
+    if args.output.lower().endswith(".iso") and not args.iso:
+        raise ValueError("--output ending in .iso requires --iso")
+
 
 def args_to_config(args: argparse.Namespace) -> Config:
     """Convert parsed arguments to a Config object."""
@@ -271,6 +280,7 @@ def args_to_config(args: argparse.Namespace) -> Config:
         movie_only=args.movie_only,
         no_extras=args.no_extras,
         keep_one=args.keep_one,
+        preserve_orphans=args.preserve_orphans,
         output_iso=args.iso,
         burn=args.burn,
         burn_device=args.burn_device,

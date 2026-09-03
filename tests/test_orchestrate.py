@@ -191,6 +191,44 @@ class TestResolveOutputWork:
         o, _ = resolve_output_work(config, "/source/parent/MyDisc")
         assert o == str(existing)
 
+    def test_trailing_slash_forces_parent_naming_when_bdmv_exists(self, tmp_path):
+        """A trailing slash makes parent-directory intent explicit."""
+        existing = tmp_path / "Movies"
+        (existing / "BDMV").mkdir(parents=True)
+        config = Config(source="/x", output=str(existing) + os.sep)
+        o, _ = resolve_output_work(config, "/source/parent/MyDisc")
+        assert o == str(existing / "MyDisc")
+
+    def test_exact_iso_path(self, tmp_path):
+        config = Config(source="/x", output=str(tmp_path / "movie.iso"), output_iso=True)
+        o, _ = resolve_output_work(config, "/source/parent/MyDisc")
+        assert o == str(tmp_path / "movie")
+        assert orchestrator.resolve_iso_path(config, o) == str(tmp_path / "movie.iso")
+
+    def test_iso_staging_removed_and_final_path_preserved(self, tmp_path, null_logger, monkeypatch):
+        config = Config(source="/x", output=str(tmp_path / "movie"), output_iso=True)
+        staging = tmp_path / "movie.work" / "iso-staging"
+        staging.mkdir(parents=True)
+        final_iso = str(tmp_path / "movie.iso")
+        created: list[tuple[str, str]] = []
+
+        def fake_create_iso(source_dir, iso_path, logger, nice):
+            created.append((source_dir, iso_path))
+            return orchestrator.iso.ISOResult(True, iso_path, False, None)
+
+        monkeypatch.setattr(orchestrator.iso, "create_iso", fake_create_iso)
+
+        orchestrator._run_iso_burn(
+            config,
+            str(staging),
+            null_logger,
+            iso_source_dir=str(staging),
+            iso_path=final_iso,
+        )
+
+        assert created == [(str(staging), final_iso)]
+        assert not staging.exists()
+
 
 # ---------------------------------------------------------------------------
 # Clip helpers
@@ -689,6 +727,16 @@ class TestRunPipeline:
                 work_dir,
                 null_logger,
             )
+
+    def test_enforce_output_size_blocks_oversized_artifact(self, null_logger, monkeypatch):
+        monkeypatch.setattr(
+            "bd_shrink.validate.check_output_size",
+            lambda output, target, logger: (False, 141.9),
+        )
+        config = Config(output_iso=True)
+
+        with pytest.raises(PipelineError, match="ISO creation and burning skipped"):
+            orchestrator.enforce_output_size("/tmp/output", config, null_logger)
 
     def test_pipeline_raises_on_encode_failure(self, tmp_path, null_logger, monkeypatch):
         src_root, output_dir, work_dir = self._make_bdmv_empty_workdir(tmp_path)

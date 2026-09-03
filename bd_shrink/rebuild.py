@@ -383,6 +383,7 @@ def rebuild_surgical(
     config: Config,
     clip_fps_map: dict[str, str],
     no_extras: bool = False,
+    preserve_orphans: bool = False,
     logger: Optional[logging.Logger] = None,
 ) -> RebuildStats:
     """Rebuild in surgical mode: preserve menus, replace encoded clips.
@@ -397,6 +398,7 @@ def rebuild_surgical(
         config: Config with codec settings
         clip_fps_map: Map of clip_id -> fps string
         no_extras: If True, skip extras
+        preserve_orphans: If True, copy unreferenced source clips
         logger: Logger instance
 
     Returns:
@@ -570,12 +572,12 @@ def rebuild_surgical(
                 run_simple(["cp", src_clpi, dst_clpi], logger=logger)
             copied_count += 1
 
-    # Orphan-clip safety net: copy any source M2TS files not referenced by
-    # the wanted playlists (e.g., menu background videos, TopMenu/MovieObject
-    # targets, seamless-branching leftovers). Players may still reference them.
-    # Skipped when --no-extras is set, since that mode intentionally discards
-    # everything except the main movie.
-    if not no_extras:
+    # Optional orphan-clip safety net for navigation targets that are not
+    # represented in MPLS playlists. Disabled by default because arbitrary
+    # orphan clips can defeat the size budget.
+    if preserve_orphans and not no_extras:
+        if logger:
+            logger.warning("Preserving unreferenced clips; output may exceed target")
         source_stream = os.path.join(source_dir, "STREAM")
         if os.path.isdir(source_stream):
             for m2ts_file in os.listdir(source_stream):

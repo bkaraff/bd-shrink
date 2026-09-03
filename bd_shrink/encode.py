@@ -600,7 +600,10 @@ def encode_clip(
     # Encode video
     is_main = clip_type == "main"
 
-    if config.main_passes == 1:
+    # Extras always use the constant-quality 720p path.  The main-pass setting
+    # controls only the main movie; applying it to extras can combine CRF
+    # content with the main bitrate and massively inflate the output.
+    if not is_main or config.main_passes == 1:
         video_ok = encode_video_single_pass(clip, src_path, encode_dir, config, is_main, logger)
     else:
         video_ok = encode_video_two_pass(clip, src_path, encode_dir, work_dir, config, logger)

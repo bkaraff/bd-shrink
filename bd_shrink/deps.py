@@ -1,5 +1,6 @@
 """Dependency checking and installation information."""
 
+import importlib.util
 import shutil
 from typing import Optional
 
@@ -16,6 +17,12 @@ OPTIONAL_TOOLS = {
     "genisoimage": "UDF ISO creation (for --burn)",
     "growisofs": "BD-R burning (from dvd+rw-tools)",
     "mount": "ISO mounting (fallback: bsdtar or 7z)",
+}
+
+PYTHON_DEPENDENCIES = {
+    "questionary": ("questionary", "Interactive prompts", "sudo dnf install python3-questionary"),
+    "rich": ("rich", "Terminal rendering", "sudo dnf install python3-rich"),
+    "wcwidth": ("wcwidth", "Terminal width support", "sudo dnf install python3-wcwidth"),
 }
 
 INSTALL_COMMANDS = {
@@ -43,6 +50,23 @@ INSTALL_COMMANDS = {
 def find_tool(name: str) -> Optional[str]:
     """Find tool in PATH. Returns full path if found, None otherwise."""
     return shutil.which(name)
+
+
+def find_python_module(name: str) -> bool:
+    """Return whether a Python module can be imported from the active runtime."""
+    return importlib.util.find_spec(name) is not None
+
+
+def check_python_dependencies() -> tuple[list[str], list[str]]:
+    """Check Python modules needed by the optional interactive TUI."""
+    found = []
+    missing = []
+    for module in PYTHON_DEPENDENCIES:
+        if find_python_module(module):
+            found.append(module)
+        else:
+            missing.append(module)
+    return found, missing
 
 
 def check_required_tools() -> tuple[list[str], list[str]]:
@@ -108,6 +132,17 @@ def format_install_deps_output() -> str:
         ]:
             if cmd:
                 lines.append(f"  {cmd}")
+
+    # Python modules used by the optional TUI
+    lines.append("\n\nPYTHON DEPENDENCIES (for --tui):")
+    python_found, python_missing = check_python_dependencies()
+    for module, (_, desc, _) in PYTHON_DEPENDENCIES.items():
+        status = "✓" if module in python_found else "✗"
+        lines.append(f"  {status} {module:15} — {desc}")
+    if python_missing:
+        lines.append("\nMISSING TUI DEPENDENCIES (Fedora / RHEL):")
+        for module in python_missing:
+            lines.append(f"  {PYTHON_DEPENDENCIES[module][2]}")
 
     # Optional tools
     lines.append("\n\nOPTIONAL TOOLS (for advanced features):")

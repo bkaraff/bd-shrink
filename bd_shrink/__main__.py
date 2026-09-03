@@ -16,7 +16,11 @@ from typing import Optional
 from bd_shrink import budget, classify, encode, inventory, iso, rebuild, validate
 from bd_shrink.cli import args_to_config, parse_args
 from bd_shrink.config import Config
-from bd_shrink.deps import format_install_deps_output, validate_dependencies
+from bd_shrink.deps import (
+    PYTHON_DEPENDENCIES,
+    format_install_deps_output,
+    validate_dependencies,
+)
 from bd_shrink.logging_setup import setup_logging
 
 VIDEO_EXTS = (".mkv", ".mp4", ".m4v", ".m2ts", ".ts")
@@ -96,13 +100,27 @@ def resolve_output_work(config: Config, source_parent: str) -> tuple[str, str]:
     subdirectory is created. Work dir defaults to <output>.work unless an
     explicit --work was given.
     """
-    out = os.path.abspath(config.output)
-    if os.path.isdir(out) and not os.path.isdir(os.path.join(out, "BDMV")):
+    requested = config.output
+    exact_iso = config.output_iso and requested.lower().endswith(".iso")
+    parent_hint = requested.endswith(os.sep) or requested.endswith("/")
+    out = os.path.abspath(requested)
+    if exact_iso:
+        out = out[:-4]
+    if parent_hint or (
+        not exact_iso and os.path.isdir(out) and not os.path.isdir(os.path.join(out, "BDMV"))
+    ):
         src_name = os.path.basename(os.path.normpath(source_parent)) or "BDMV"
         out = os.path.join(out, src_name)
 
     work_dir = os.path.abspath(config.work_dir) if config.work_dir else out + ".work"
     return out, work_dir
+
+
+def resolve_iso_path(config: Config, output_dir: str) -> str:
+    """Resolve the final ISO path from an exact file or a folder output."""
+    if config.output.lower().endswith(".iso"):
+        return os.path.abspath(config.output)
+    return output_dir + ".iso"
 
 
 def has_resume_state(work_dir: str) -> bool:
@@ -328,9 +346,13 @@ def maybe_launch_tui(config: Config) -> Optional[Config]:
 
         from bd_shrink.tui import interactive_tui
     except ImportError as e:
+        missing = getattr(e, "name", None) or str(e)
+        install = next(
+            (details[2] for module, details in PYTHON_DEPENDENCIES.items() if module == missing),
+            "sudo dnf install python3-questionary python3-rich python3-wcwidth",
+        )
         print(
-            "ERROR: TUI requires 'questionary' and 'rich'. "
-            f"Install with: pip install questionary rich ({e})",
+            f"ERROR: TUI dependency '{missing}' is unavailable. Install with: {install} ({e})",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -355,6 +377,8 @@ def run_pipeline(
     output_dir: str,
     work_dir: str,
     logger,
+    iso_source_dir: Optional[str] = None,
+    iso_path: Optional[str] = None,
 ) -> None:
     """Run the 7-phase pipeline. Raises PipelineError on phase failure."""
     source_dir = os.path.join(bdmv_root, "STREAM")
@@ -454,6 +478,7 @@ def run_pipeline(
             config,
             clip_fps_map,
             no_extras=config.no_extras,
+            preserve_orphans=config.preserve_orphans,
             logger=logger,
         )
     write_checkpoint(work_dir, "rebuild.json", json.dumps(asdict(stats), indent=2))
@@ -467,29 +492,40 @@ def run_pipeline(
     # Phase 6: Validate
     logger.info("[6/7] Validate")
     validation = validate.validate_bdmv_structure(output_dir, logger)
-    fits, actual_gb = validate.check_output_size(output_dir, config.target_gb, logger)
     write_checkpoint(work_dir, "validate.json", json.dumps(asdict(validation), indent=2))
     if not validation.valid:
         raise PipelineError(
             f"validation failed: missing={validation.missing_files} "
             f"corrupted={validation.corrupted_files}"
         )
+    actual_gb = enforce_output_size(output_dir, config, logger)
     logger.info(f"  output: {output_dir} ({actual_gb:.2f} GB / target {config.target_gb} GB)")
-    if not fits:
-        logger.warning("output exceeds target size")
 
     # Phase 7: ISO/Burn
     if config.burn or config.output_iso:
         logger.info("[7/7] ISO/Burn")
-        _run_iso_burn(config, output_dir, logger)
+        _run_iso_burn(
+            config,
+            output_dir,
+            logger,
+            iso_source_dir=iso_source_dir,
+            iso_path=iso_path,
+        )
 
 
-def _run_iso_burn(config: Config, output_dir: str, logger) -> None:
+def _run_iso_burn(
+    config: Config,
+    output_dir: str,
+    logger,
+    iso_source_dir: Optional[str] = None,
+    iso_path: Optional[str] = None,
+) -> None:
     """Dispatch ISO creation and burning per the --burn/--iso/flag combination."""
-    iso_path = os.path.splitext(output_dir)[0] + ".iso"
+    iso_path = iso_path or resolve_iso_path(config, output_dir)
+    source_dir = iso_source_dir or output_dir
 
     if config.burn and config.output_iso:
-        result = iso.create_iso(output_dir, iso_path, logger, config.nice)
+        result = iso.create_iso(source_dir, iso_path, logger, config.nice)
         if not result.success:
             raise PipelineError(f"ISO creation failed: {result.error_message}")
         device = config.burn_device or detect_burn_device()
@@ -503,15 +539,19 @@ def _run_iso_burn(config: Config, output_dir: str, logger) -> None:
         device = config.burn_device or detect_burn_device()
         if not device:
             raise PipelineError("--burn requires --burn-device (auto-detection found no drive)")
-        result = iso.burn_direct_pipe(output_dir, device, logger, config.nice)
+        result = iso.burn_direct_pipe(source_dir, device, logger, config.nice)
         if not result.success:
             raise PipelineError(f"burn failed: {result.error_message}")
         logger.info(f"  direct-pipe burned -> {device}")
     elif config.output_iso:
-        result = iso.create_iso(output_dir, iso_path, logger, config.nice)
+        result = iso.create_iso(source_dir, iso_path, logger, config.nice)
         if not result.success:
             raise PipelineError(f"ISO creation failed: {result.error_message}")
         logger.info(f"  ISO: {iso_path}")
+
+    if iso_source_dir and os.path.isdir(iso_source_dir):
+        shutil.rmtree(iso_source_dir)
+        logger.info(f"  removed ISO staging directory: {iso_source_dir}")
 
 
 # ---------------------------------------------------------------------------
@@ -534,12 +574,27 @@ def print_dry_run(config: Config, bdmv_root: str, output_dir: str, work_dir: str
     if config.no_extras:
         logger.info("  extras: skipped (--no-extras)")
     if config.output_iso:
-        logger.info("  output: ISO")
+        logger.info(f"  output: ISO ({resolve_iso_path(config, output_dir)})")
     if config.burn:
         device = config.burn_device or detect_burn_device() or "<none>"
         logger.info(
             f"  burn:   {device}" + (" (incl. ISO)" if config.output_iso else " (direct pipe)")
         )
+
+
+def enforce_output_size(output_dir: str, config: Config, logger) -> float:
+    """Raise when a completed BDMV exceeds the requested target size."""
+    fits, actual_gb = validate.check_output_size(output_dir, config.target_gb, logger)
+    if not fits:
+        consequence = (
+            "ISO creation and burning skipped"
+            if config.output_iso or config.burn
+            else "encoded folder retained for diagnosis"
+        )
+        raise PipelineError(
+            f"output exceeds target size: {actual_gb:.2f} GB > {config.target_gb} GB; {consequence}"
+        )
+    return actual_gb
 
 
 # ---------------------------------------------------------------------------
@@ -580,22 +635,32 @@ def main(argv: Optional[list] = None) -> None:
 
     # Resolve output + work dir.
     output_dir, work_dir = resolve_output_work(config, source_parent)
+    iso_path = resolve_iso_path(config, output_dir) if config.output_iso else ""
+    pipeline_output_dir = output_dir
+    iso_source_dir = None
+    if config.output_iso:
+        pipeline_output_dir = os.path.join(work_dir, "iso-staging")
+        iso_source_dir = pipeline_output_dir
 
     # Force / resume handling: force check is BEFORE dry-run (per AGENTS.md).
     resuming = has_resume_state(work_dir)
-    if os.path.exists(output_dir) and not resuming and not config.force:
+    existing_artifact = iso_path if config.output_iso else output_dir
+    if os.path.exists(existing_artifact) and not resuming and not config.force:
         print(
-            f"ERROR: output exists: {output_dir} — use -f to overwrite "
+            f"ERROR: output exists: {existing_artifact} — use -f to overwrite "
             "(do NOT use -f when resuming)",
             file=sys.stderr,
         )
         sys.exit(1)
-    if config.force and not resuming and os.path.exists(output_dir):
-        shutil.rmtree(output_dir)
+    if config.force and not resuming and not config.dry_run and os.path.exists(existing_artifact):
+        if os.path.isdir(existing_artifact):
+            shutil.rmtree(existing_artifact)
+        else:
+            os.unlink(existing_artifact)
 
-    if config.clean_work and os.path.isdir(work_dir) and not resuming:
+    if config.clean_work and not config.dry_run and os.path.isdir(work_dir) and not resuming:
         shutil.rmtree(work_dir)
-    if config.force and not resuming and os.path.isdir(work_dir):
+    if config.force and not config.dry_run and not resuming and os.path.isdir(work_dir):
         # Fresh --force run should also start a clean work dir.
         shutil.rmtree(work_dir)
     os.makedirs(work_dir, exist_ok=True)
@@ -617,7 +682,15 @@ def main(argv: Optional[list] = None) -> None:
 
     # Run pipeline.
     try:
-        run_pipeline(config, bdmv_root, output_dir, work_dir, logger)
+        run_pipeline(
+            config,
+            bdmv_root,
+            pipeline_output_dir,
+            work_dir,
+            logger,
+            iso_source_dir=iso_source_dir,
+            iso_path=iso_path,
+        )
     except PipelineError as e:
         logger.error(str(e))
         print(f"ERROR: {e}", file=sys.stderr)

@@ -502,6 +502,36 @@ class TestEncodeClip:
         assert stat.success is False
         assert stat.video_encoded is False
 
+    def test_extras_use_single_pass_even_with_two_main_passes(
+        self, mock_clip, temp_dirs, default_config, null_logger
+    ):
+        """Extras must use CRF, not the main movie bitrate/two-pass path."""
+        src_path = os.path.join(temp_dirs["source"], "00000.m2ts")
+        with open(src_path, "w") as f:
+            f.write("dummy")
+
+        with (
+            patch("bd_shrink.encode.extract_audio", return_value=(0, [])),
+            patch("bd_shrink.encode.extract_subtitles", return_value=0),
+            patch("bd_shrink.encode.encode_video_single_pass", return_value=True) as single,
+            patch("bd_shrink.encode.encode_video_two_pass") as two,
+        ):
+            stat = encode_clip(
+                mock_clip,
+                "extras",
+                temp_dirs["source"],
+                temp_dirs["encode"],
+                temp_dirs["work"],
+                default_config,
+                total_clips=1,
+                clip_idx=1,
+                logger=null_logger,
+            )
+
+        assert stat.success is True
+        single.assert_called_once()
+        two.assert_not_called()
+
 
 class TestEncodeAll:
     """Test batch encoding."""

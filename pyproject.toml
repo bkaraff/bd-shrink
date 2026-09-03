@@ -26,6 +26,7 @@ classifiers = [
 dependencies = [
     "questionary>=1.10.0",
     "rich>=13.0.0",
+    "wcwidth>=0.2.13",
 ]
 
 [project.optional-dependencies]

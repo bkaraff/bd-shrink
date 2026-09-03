@@ -422,6 +422,7 @@ class TestSurgicalNoExtras:
                 config=self._make_config(),
                 clip_fps_map={"00001": "23.976", "00002": "23.976"},
                 no_extras=False,
+                preserve_orphans=True,
                 logger=null_logger,
             )
 
@@ -434,8 +435,8 @@ class TestSurgicalNoExtras:
         assert "00001.m2ts" in copied_targets
         assert "00002.m2ts" in copied_targets  # extra copied when not no_extras
 
-    def test_orphan_clips_copied_when_not_no_extras(self, temp_dirs, null_logger):
-        """With no_extras=False, orphan clips not in MPLS are also copied."""
+    def test_orphan_clips_not_copied_by_default(self, temp_dirs, null_logger):
+        """Unreferenced clips must not defeat the surgical size budget."""
         source_dir = os.path.join(temp_dirs["temp"], "src2", "BDMV")
         os.makedirs(os.path.join(source_dir, "STREAM"), exist_ok=True)
         os.makedirs(os.path.join(source_dir, "CLIPINF"), exist_ok=True)
@@ -480,7 +481,7 @@ class TestSurgicalNoExtras:
         copied_targets = " ".join(" ".join(c) for c in copied)
         assert "00001.m2ts" in copied_targets
         assert "00002.m2ts" in copied_targets
-        assert "00003.m2ts" in copied_targets  # orphan copied when not no_extras
+        assert "00003.m2ts" not in copied_targets
 
     def test_orphan_clips_skipped_when_no_extras(self, temp_dirs, null_logger):
         """With no_extras=True, orphan clips are also skipped."""

@@ -83,6 +83,25 @@ def has_video(inventory: Inventory, playlist_meta: PlaylistMetadata) -> bool:
     return False
 
 
+def effective_duration(inventory: Inventory, playlist_meta: PlaylistMetadata) -> float:
+    """Estimate duration without counting duplicate clip references repeatedly.
+
+    Some discs contain loop playlists with hundreds of references to one short
+    clip. Their raw MPLS duration can incorrectly make a menu look like the
+    main feature.
+    """
+    seen: set[str] = set()
+    duration = 0.0
+    for clip_id in playlist_meta.clips:
+        if clip_id in seen:
+            continue
+        seen.add(clip_id)
+        clip = inventory.clips.get(clip_id)
+        if clip:
+            duration += clip.duration_sec
+    return duration
+
+
 def classify_playlists(
     inventory: Inventory,
     menu_duration_floor: float = 120.0,
@@ -115,14 +134,14 @@ def classify_playlists(
             continue
 
         # Rule 2: Short + low/no video = menu
-        if is_short_clip(playlist_meta, menu_duration_floor) and not has_video(
+        if effective_duration(inventory, playlist_meta) <= menu_duration_floor and not has_video(
             inventory, playlist_meta
         ):
             menu_pls.append(pl_id)
             continue
 
         # Rule 3: Short + low-res = menu
-        if is_short_clip(playlist_meta, menu_duration_floor) and is_low_res(
+        if effective_duration(inventory, playlist_meta) <= menu_duration_floor and is_low_res(
             inventory, playlist_meta
         ):
             menu_pls.append(pl_id)
@@ -138,14 +157,14 @@ def classify_playlists(
     main_pls = []
     if main_candidates:
         # Sort by duration (descending)
-        main_candidates.sort(key=lambda x: x[1].duration_sec, reverse=True)
-        max_duration = main_candidates[0][1].duration_sec
+        main_candidates.sort(key=lambda x: effective_duration(inventory, x[1]), reverse=True)
+        max_duration = effective_duration(inventory, main_candidates[0][1])
 
         # All playlists within 5% of max are considered main (handles alternate cuts)
         # Use 5% window as per AGENTS.md
         min_duration = max_duration * 0.95
         for pl_id, meta in main_candidates:
-            if meta.duration_sec >= min_duration:
+            if effective_duration(inventory, meta) >= min_duration:
                 main_pls.append(pl_id)
 
     # Move unclassified main_candidates to extras if not selected

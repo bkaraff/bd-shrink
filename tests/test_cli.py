@@ -102,6 +102,12 @@ class TestValidation:
         with pytest.raises(ValueError, match="burn-speed must be >= 0"):
             validate_args(args)
 
+    def test_iso_output_path_requires_iso_flag(self):
+        """Verify an exact .iso output cannot silently become a folder."""
+        args, _ = parse_args(["-o", "/tmp/movie.iso"])
+        with pytest.raises(ValueError, match="requires --iso"):
+            validate_args(args)
+
 
 class TestConfigConversion:
     """Test conversion from args to Config."""
@@ -128,6 +134,12 @@ class TestConfigConversion:
         args, _ = parse_args(["--keep-one"])
         config = args_to_config(args)
         assert config.keep_one is True
+
+    def test_args_to_config_preserve_orphans(self):
+        """Verify orphan preservation is explicit rather than default."""
+        args, _ = parse_args(["--preserve-orphans"])
+        config = args_to_config(args)
+        assert config.preserve_orphans is True
 
     def test_args_to_config_with_custom_values(self):
         """Verify Config with custom argument values."""

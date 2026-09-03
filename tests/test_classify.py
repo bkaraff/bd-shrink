@@ -5,6 +5,7 @@ import pytest
 from bd_shrink.classify import (
     classify_playlists,
     count_main_clips_unique,
+    effective_duration,
     has_video,
     is_low_res,
     is_menu_type,
@@ -428,6 +429,30 @@ class TestClassification:
 
         assert "00000" in result.main_playlists
         assert "90001" in result.menu_playlists
+
+    def test_duplicate_clip_loop_does_not_become_main(self, movie_clip_hd):
+        """A looped short clip uses unique duration for classification."""
+        looped = Clip(
+            clip_id="90000",
+            duration_sec=30.0,
+            video=movie_clip_hd.video,
+            audio=[],
+            subtitles=[],
+        )
+        inventory = Inventory(
+            clips={"00000": movie_clip_hd, "90000": looped},
+            playlists={
+                "00000": PlaylistMetadata("00000", 0, 7200.0, 20, ["00000"]),
+                "90000": PlaylistMetadata("90000", 0, 30000.0, 6, ["90000"] * 1000),
+            },
+        )
+
+        assert effective_duration(inventory, inventory.playlists["90000"]) == 30.0
+        result = classify_playlists(inventory)
+
+        assert result.main_playlists == ["00000"]
+        assert result.menu_playlists == []
+        assert result.extras_playlists == ["90000"]
 
 
 class TestSeamlessBranching:

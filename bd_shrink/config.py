@@ -33,6 +33,7 @@ class Config:
     movie_only: bool = False
     no_extras: bool = False
     keep_one: bool = False
+    preserve_orphans: bool = False
 
     # Output format
     output_iso: bool = False
