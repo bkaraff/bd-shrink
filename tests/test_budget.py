@@ -340,6 +340,37 @@ class TestBudgetCalculation:
         assert budget["main_duration_sec"] == 7200.0
         assert budget["main_clip_count"] == 1
 
+    def test_calculate_budget_deduplicates_looping_extras(self, main_movie_clip, menu_clip):
+        """Repeated playlist references must not inflate the extras budget."""
+        inventory = Inventory(
+            clips={"00000": main_movie_clip, "90000": menu_clip},
+            playlists={
+                "00000": PlaylistMetadata(
+                    playlist_id="00000",
+                    playlist_type=0,
+                    duration_sec=7200.0,
+                    num_chapters=20,
+                    clips=["00000"],
+                ),
+                "00001": PlaylistMetadata(
+                    playlist_id="00001",
+                    playlist_type=0,
+                    duration_sec=300.0,
+                    num_chapters=1,
+                    clips=["90000"] * 100,
+                ),
+            },
+        )
+
+        budget = calculate_budget(
+            inventory,
+            main_playlist_ids=["00000"],
+            extras_playlist_ids=["00001"],
+            menu_playlist_ids=[],
+        )
+
+        assert budget["menu_and_extras_video_mb"] == pytest.approx(30.0 * 6_000_000 / 8 / (1024**2))
+
     def test_calculate_budget_respects_target_size(self, main_movie_clip):
         """Verify different target sizes affect bitrate."""
         inventory = Inventory(

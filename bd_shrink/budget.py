@@ -144,6 +144,13 @@ def calculate_budget(
         if pl_id in inventory.playlists:
             menu_clips.extend(inventory.playlists[pl_id].clips)
 
+    # Playlist loops and alternate playlists can reference the same clip many
+    # times. Budget each physical clip once; repeated references do not create
+    # additional encoded data.
+    main_clips = list(dict.fromkeys(main_clips))
+    extras_clips = list(dict.fromkeys(extras_clips))
+    menu_clips = list(dict.fromkeys(menu_clips))
+
     # Get unique main clips + duration (per B9 fix)
     main_clip_count, main_duration_sec = count_main_clips_unique(inventory, main_playlist_ids)
 
@@ -161,28 +168,11 @@ def calculate_budget(
     extras_video_bitrate = 6_000_000  # 6 Mbps
     menu_video_bitrate = 4_000_000  # 4 Mbps
 
-    extras_duration = (
-        sum(
-            inventory.clips[cid].duration_sec
-            for pl_id in extras_playlist_ids
-            if pl_id in inventory.playlists
-            for cid in inventory.playlists[pl_id].clips
-            if cid in inventory.clips
-        )
-        if extras_clips
-        else 0.0
+    extras_duration = sum(
+        inventory.clips[cid].duration_sec for cid in extras_clips if cid in inventory.clips
     )
-
-    menu_duration = (
-        sum(
-            inventory.clips[cid].duration_sec
-            for pl_id in menu_playlist_ids
-            if pl_id in inventory.playlists
-            for cid in inventory.playlists[pl_id].clips
-            if cid in inventory.clips
-        )
-        if menu_clips
-        else 0.0
+    menu_duration = sum(
+        inventory.clips[cid].duration_sec for cid in menu_clips if cid in inventory.clips
     )
 
     extras_video_bytes = int(extras_duration * extras_video_bitrate / 8)
