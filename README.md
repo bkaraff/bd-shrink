@@ -18,6 +18,9 @@ A Linux-native alternative to BD Rebuilder that uses `ffmpeg` + `tsMuxeR` to re-
 # Full disc with menus (IGS discs only) — parent dir auto-names subfolder
 ./bd_shrink.sh -s /path/to/BDMV -o /mnt/nvme/ -t 23 -f
 
+# Write an ISO to an exact path
+./bd_shrink.sh -s /path/to/BDMV -o /backup/movie.iso -t 23 -f --iso
+
 # Preview without encoding
 ./bd_shrink.sh -s /path/to/BDMV -o /tmp/test -n -f
 
@@ -37,10 +40,7 @@ The output is playable in software players and hardware Blu-ray players.
 
 Preserves the original menus, `index.bdmv`, `MovieObject.bdmv`, and all playlist/CLIP metadata. Only re-encodes the video streams in-place.
 
-**Limitations:**
-- Only works with IGS (bitmap) menus — not BD-J (Java) menus
-- BD-J discs emit a warning but attempt anyway (test carefully)
-- Multi-angle and complex seamless branching may fail
+**Limitations:** Multi-angle and complex seamless branching may fail.
 
 ## Audio & Subtitles
 
@@ -75,7 +75,9 @@ Main bitrate:   17.53 Mbps  (to fill BD25)
 
 - **Folder**: Complete BDMV structure in a source-named subdirectory. When `-o` points to a parent directory (e.g., `/mnt/nvme/`), the script creates `<source-title>/` inside it with `BDMV/` and `CERTIFICATE/`. The `.work` directory lives as a sibling in the output root.
 - **ISO** (`--iso`): ISO file named after the source title (e.g., `<source-title>.iso`) containing only `BDMV/` and `CERTIFICATE/`. The `.work` directory is never included.
-- **Burn** (`--burn`): Burn output to BD-R disc via `growisofs` or `xorriso`. Same exclusion of work files applies.
+- **ISO staging**: `--iso` builds a temporary BDMV tree under `.work`, removes it after successful ISO creation, and retains it after failure.
+- **Burn** (`--burn`): Burn output to BD-R disc via `growisofs`. Same exclusion of work files applies.
+- A trailing slash in `--output` means “parent directory”; an output ending in `.iso` is an exact ISO path.
 
 ## File structure of a typical BD50
 
@@ -102,11 +104,11 @@ CERTIFICATE/
 
 ```
   -s, --source DIR       Source BDMV folder (must contain index.bdmv)
-  -o, --output DIR       Output directory (auto-creates source-named
-                           subfolder when pointed at a parent directory)
+  -o, --output DIR|FILE  Output directory or exact `.iso` path
   -t, --target NUM       Target size in GB (default: 23 for BD25)
   --movie-only           Movie-only backup (no menus, fresh BD author)
   --iso                  Output ISO instead of BDMV folder
+  --preserve-orphans     Keep unreferenced source clips (may exceed target)
   --burn                  Burn output to BD-R after validation
   --burn-device DEV       Optical drive device path (auto-detected if omitted)
   --no-extras            Skip extras entirely
@@ -138,7 +140,14 @@ CERTIFICATE/
 | `eject` (from `util-linux`) | Disc ejection after burn (optional, `--burn`) |
 | `vlc` or `mpv` + `libbluray` | Playback / testing output before burning (optional) |
 
-See [INSTALL.md](INSTALL.md) for setup instructions, or run `./bd_shrink.sh --install-deps` to check for missing tools.
+On Fedora/RHEL, install the TUI dependencies with
+`sudo dnf install python3-questionary python3-rich python3-wcwidth`. Run
+`./bd_shrink.sh --install-deps` to check tools and Python modules.
+
+The default surgical mode does not copy arbitrary unreferenced source clips.
+Use `--preserve-orphans` only when those clips are required, since they may
+make the result exceed the target. An over-target output stops the pipeline
+before ISO creation or burning.
 
 ## How It Works
 
