@@ -263,6 +263,17 @@ class TestClipHelpers:
         assert parse_playlist_csv("") == []
         assert parse_playlist_csv(" , ") == []
 
+    def test_apply_overrides_accepts_bare_inventory_playlist_ids(self, sample_inventory):
+        """Playlist overrides accept .mpls input for bare inventory keys."""
+        sample_inventory.playlists["00001"] = sample_inventory.playlists.pop("00000.mpls")
+        sample_inventory.playlists["00001"].playlist_id = "00001"
+        config = Config(source="/x", output="/y", override_main_playlists="00001")
+        classification = Classification(main_playlists=[], extras_playlists=[], menu_playlists=[])
+
+        result = orchestrator.apply_overrides(config, sample_inventory, classification)
+
+        assert result.main_playlists == ["00001"]
+
     def test_apply_overrides_main(self, sample_inventory):
         sample_inventory.playlists["00001.mpls"] = PlaylistMetadata(
             playlist_id="00001.mpls",

@@ -193,8 +193,19 @@ def apply_overrides(
         if not flag_value:
             return None
         parsed = parse_playlist_csv(flag_value)
-        matched = [p for p in parsed if p in inv.playlists]
-        dropped = [p for p in parsed if p not in inv.playlists]
+        # Inventory parsers may expose playlist IDs with or without the
+        # ``.mpls`` suffix. Accept either CLI spelling, but return the exact
+        # key used by the inventory for downstream lookups.
+        matched = []
+        dropped = []
+        for playlist in parsed:
+            playlist_id = playlist[:-5] if playlist.endswith(".mpls") else playlist
+            if playlist in inv.playlists:
+                matched.append(playlist)
+            elif playlist_id in inv.playlists:
+                matched.append(playlist_id)
+            else:
+                dropped.append(playlist)
         if dropped and logger:
             logger.warning(f"{flag_name}: not on disc, ignored: {', '.join(dropped)}")
         if not matched:
